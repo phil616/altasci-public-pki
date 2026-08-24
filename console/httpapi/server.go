@@ -25,6 +25,7 @@ import (
 	consoleconfig "github.com/cloudflare/cfssl/console/config"
 	"github.com/cloudflare/cfssl/console/pki"
 	"github.com/cloudflare/cfssl/console/store"
+	"github.com/cloudflare/cfssl/console/tsa"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -35,6 +36,7 @@ type Server struct {
 	store          *store.Store
 	auth           *auth.Service
 	pki            *pki.Service
+	tsa            *tsa.Service
 	logger         *slog.Logger
 	console        *http.ServeMux
 	public         *http.ServeMux
@@ -57,14 +59,14 @@ const (
 	requestIDKey contextKey = "request-id"
 )
 
-func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service, pkiService *pki.Service, logger *slog.Logger) (*Server, error) {
-	if data == nil || authService == nil || pkiService == nil {
+func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service, pkiService *pki.Service, tsaService *tsa.Service, logger *slog.Logger) (*Server, error) {
+	if data == nil || authService == nil || pkiService == nil || tsaService == nil {
 		return nil, errors.New("HTTP API dependencies are required")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{config: cfg, store: data, auth: authService, pki: pkiService,
+	s := &Server{config: cfg, store: data, auth: authService, pki: pkiService, tsa: tsaService,
 		logger: logger, console: http.NewServeMux(), public: http.NewServeMux(), rates: make(map[string]rateWindow)}
 	registry := prometheus.NewRegistry()
 	s.requestCount = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pki_console_http_requests_total",
@@ -168,6 +170,8 @@ func (s *Server) routes() {
 	s.console.Handle("POST /api/v1/cas/{id}/profiles", s.requireAuth(s.idempotent(http.HandlerFunc(s.createProfile))))
 	s.console.Handle("PUT /api/v1/cas/{id}/profiles/{profileID}", s.requireAuth(s.idempotent(http.HandlerFunc(s.updateProfile))))
 	s.console.Handle("DELETE /api/v1/cas/{id}/profiles/{profileID}", s.requireAuth(s.idempotent(http.HandlerFunc(s.deleteProfile))))
+	s.console.Handle("GET /api/v1/cas/{id}/timestamp-authorities", s.requireAuth(http.HandlerFunc(s.listTimestampAuthorities)))
+	s.console.Handle("POST /api/v1/cas/{id}/timestamp-authorities", s.requireAuth(s.idempotent(http.HandlerFunc(s.createTimestampAuthority))))
 	s.console.Handle("POST /api/v1/certificate-requests", s.requireAuth(s.idempotent(http.HandlerFunc(s.createCertificateRequest))))
 	s.console.Handle("GET /api/v1/certificate-requests", s.requireAuth(http.HandlerFunc(s.listCertificateRequests)))
 	s.console.Handle("GET /api/v1/certificate-requests/{id}", s.requireAuth(http.HandlerFunc(s.getCertificateRequest)))
@@ -196,6 +200,7 @@ func (s *Server) routes() {
 	s.public.HandleFunc("GET /crl/{file}", s.publicCRL)
 	s.public.HandleFunc("POST /ocsp/{slug}", s.publicOCSP)
 	s.public.HandleFunc("GET /ocsp/{slug}/{request...}", s.publicOCSP)
+	s.public.HandleFunc("POST /tsa/{slug}", s.publicTimestamp)
 	s.public.HandleFunc("GET /health/live", s.live)
 }
 

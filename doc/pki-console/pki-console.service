@@ -19,7 +19,9 @@ UMask=0077
 NoNewPrivileges=true
 PrivateDevices=true
 PrivateTmp=true
-ProtectClock=true
+# TSA performs a read-only adjtimex(2) health query. The empty capability set
+# still prevents changing the host clock because CAP_SYS_TIME is unavailable.
+ProtectClock=false
 ProtectControlGroups=true
 ProtectHome=true
 ProtectHostname=true

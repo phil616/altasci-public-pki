@@ -73,6 +73,22 @@ export interface SigningProfile {
   enabled: boolean;
 }
 
+export interface TimestampAuthority {
+  id: string;
+  ca_id: string;
+  slug: string;
+  name: string;
+  policy_oid: string;
+  certificate_pem: string;
+  chain_pem: string;
+  allowed_hashes: Array<'SHA-256' | 'SHA-384' | 'SHA-512'>;
+  not_before: string;
+  not_after: string;
+  status: 'active' | 'suspended' | 'retired' | 'revoked';
+  created_by: string;
+  created_at: string;
+}
+
 export interface CAGrant {
   ca_id: string;
   user_id: string;

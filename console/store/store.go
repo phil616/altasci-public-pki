@@ -16,6 +16,7 @@ import (
 
 var ErrNotFound = errors.New("record not found")
 var ErrIdempotencyConflict = errors.New("idempotency key conflicts with another request")
+var ErrTimestampSerialCollision = errors.New("timestamp serial already exists")
 
 type Store struct {
 	pool *pgxpool.Pool

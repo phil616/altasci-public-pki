@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -15,8 +16,17 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.RootUserEmail != "root@example.com" || c.PublicHostname != "pki.example.com" ||
-		c.DatabaseURL != "postgresql://pki_console:secret@db.example.com:5432/pki?sslmode=verify-full" {
+		c.DatabaseURL != "postgresql://pki_console:secret@db.example.com:5432/pki?sslmode=verify-full" ||
+		c.TSAMaxClockUncertainty != 5*time.Second {
 		t.Fatalf("unexpected config: %#v", c)
+	}
+}
+
+func TestLoadRejectsInvalidTSAClockUncertainty(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("TSA_MAX_CLOCK_UNCERTAINTY", "0s")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "between 1ms and 1m") {
+		t.Fatalf("expected TSA clock uncertainty validation error, got %v", err)
 	}
 }
 

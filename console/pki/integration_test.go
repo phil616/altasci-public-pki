@@ -32,7 +32,7 @@ func TestPostgresIssuanceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, err = pool.Exec(ctx, `TRUNCATE audit_events, audit_chain_heads, ocsp_responses, crls,
+	_, err = pool.Exec(ctx, `TRUNCATE timestamp_tokens, timestamp_authorities, audit_events, audit_chain_heads, ocsp_responses, crls,
         revocations, leaf_key_artifacts, certificates, issuance_jobs, request_approvals,
         certificate_requests, ca_grants, signing_profiles, ocsp_responders, ca_key_versions,
         certificate_authorities, idempotency_keys, sessions, users CASCADE`)

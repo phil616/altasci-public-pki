@@ -16,58 +16,67 @@ import (
 )
 
 const (
-	defaultListenAddress = ":8080"
-	defaultSessionIdle   = 8 * time.Hour
-	defaultSessionMax    = 24 * time.Hour
-	defaultRootIdle      = 30 * time.Minute
-	defaultRootMax       = 4 * time.Hour
+	defaultListenAddress          = ":8080"
+	defaultSessionIdle            = 8 * time.Hour
+	defaultSessionMax             = 24 * time.Hour
+	defaultRootIdle               = 30 * time.Minute
+	defaultRootMax                = 4 * time.Hour
+	defaultTSAMaxClockUncertainty = 5 * time.Second
 )
 
 // Config contains all settings required by the API and worker processes.
 // Secrets are intentionally kept out of String methods and structured logs.
 type Config struct {
-	ListenAddress       string
-	DatabaseURL         string
-	PublicBaseURL       *url.URL
-	ConsoleBaseURL      *url.URL
-	PublicHostname      string
-	ConsoleHostname     string
-	RootUserEmail       string
-	RootUserPassword    string
-	RootUserTOTPSecret  []byte
-	AccessTeamDomain    string
-	AccessAudience      string
-	MasterKeyActiveID   string
-	MasterKeys          map[string][]byte
-	OriginSharedSecret  []byte
-	SessionIdle         time.Duration
-	SessionMax          time.Duration
-	RootSessionIdle     time.Duration
-	RootSessionMax      time.Duration
-	TrustedProxyCIDRs   []string
-	DevelopmentInsecure bool
+	ListenAddress          string
+	DatabaseURL            string
+	PublicBaseURL          *url.URL
+	ConsoleBaseURL         *url.URL
+	PublicHostname         string
+	ConsoleHostname        string
+	RootUserEmail          string
+	RootUserPassword       string
+	RootUserTOTPSecret     []byte
+	AccessTeamDomain       string
+	AccessAudience         string
+	MasterKeyActiveID      string
+	MasterKeys             map[string][]byte
+	OriginSharedSecret     []byte
+	SessionIdle            time.Duration
+	SessionMax             time.Duration
+	RootSessionIdle        time.Duration
+	RootSessionMax         time.Duration
+	TrustedProxyCIDRs      []string
+	TSAMaxClockUncertainty time.Duration
+	DevelopmentInsecure    bool
 }
 
 // Load reads configuration from environment variables and fails closed when a
 // security-sensitive setting is absent or malformed.
 func Load() (Config, error) {
+	var err error
 	c := Config{
-		ListenAddress:       envDefault("PKI_LISTEN_ADDRESS", defaultListenAddress),
-		DatabaseURL:         strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		RootUserEmail:       strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_USER_EMAIL"))),
-		RootUserPassword:    os.Getenv("ROOT_USER_PASSWORD"),
-		AccessTeamDomain:    strings.TrimRight(strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")), "/"),
-		AccessAudience:      strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
-		MasterKeyActiveID:   strings.TrimSpace(os.Getenv("PKI_MASTER_KEY_ACTIVE_ID")),
-		SessionIdle:         defaultSessionIdle,
-		SessionMax:          defaultSessionMax,
-		RootSessionIdle:     defaultRootIdle,
-		RootSessionMax:      defaultRootMax,
-		TrustedProxyCIDRs:   splitCSV(os.Getenv("TRUSTED_PROXY_CIDRS")),
-		DevelopmentInsecure: strings.EqualFold(os.Getenv("PKI_DEVELOPMENT_INSECURE"), "true"),
+		ListenAddress:          envDefault("PKI_LISTEN_ADDRESS", defaultListenAddress),
+		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RootUserEmail:          strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_USER_EMAIL"))),
+		RootUserPassword:       os.Getenv("ROOT_USER_PASSWORD"),
+		AccessTeamDomain:       strings.TrimRight(strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")), "/"),
+		AccessAudience:         strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
+		MasterKeyActiveID:      strings.TrimSpace(os.Getenv("PKI_MASTER_KEY_ACTIVE_ID")),
+		SessionIdle:            defaultSessionIdle,
+		SessionMax:             defaultSessionMax,
+		RootSessionIdle:        defaultRootIdle,
+		RootSessionMax:         defaultRootMax,
+		TrustedProxyCIDRs:      splitCSV(os.Getenv("TRUSTED_PROXY_CIDRS")),
+		TSAMaxClockUncertainty: defaultTSAMaxClockUncertainty,
+		DevelopmentInsecure:    strings.EqualFold(os.Getenv("PKI_DEVELOPMENT_INSECURE"), "true"),
+	}
+	if raw := strings.TrimSpace(os.Getenv("TSA_MAX_CLOCK_UNCERTAINTY")); raw != "" {
+		c.TSAMaxClockUncertainty, err = time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("TSA_MAX_CLOCK_UNCERTAINTY must be a duration: %w", err)
+		}
 	}
 
-	var err error
 	if c.PublicBaseURL, err = parseHTTPSURL("PUBLIC_BASE_URL", os.Getenv("PUBLIC_BASE_URL"), c.DevelopmentInsecure); err != nil {
 		return Config{}, err
 	}
@@ -170,6 +179,9 @@ func (c Config) Validate() error {
 	}
 	if !c.DevelopmentInsecure && len(c.TrustedProxyCIDRs) == 0 {
 		return errors.New("TRUSTED_PROXY_CIDRS is required outside development mode")
+	}
+	if c.TSAMaxClockUncertainty < time.Millisecond || c.TSAMaxClockUncertainty > time.Minute {
+		return errors.New("TSA_MAX_CLOCK_UNCERTAINTY must be between 1ms and 1m")
 	}
 	return nil
 }

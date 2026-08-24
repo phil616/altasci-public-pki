@@ -53,4 +53,17 @@ describe('console API security headers', () => {
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/certificate-inventory?status=rejected');
   });
+
+  it('normalizes nullable profile and timestamp authority lists', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({ items: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const profiles = await consoleAPI.profiles('ca-id');
+    const timestampAuthorities = await consoleAPI.timestampAuthorities('ca-id');
+
+    expect(profiles.items).toEqual([]);
+    expect(timestampAuthorities.items).toEqual([]);
+  });
 });

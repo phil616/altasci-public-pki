@@ -7,7 +7,7 @@ interface Env {
   PKI_CONSOLE_HOST: string;
 }
 
-const backendPrefixes = ['/api', '/pki', '/issuers', '/crl', '/ocsp', '/health'];
+const backendPrefixes = ['/api', '/pki', '/issuers', '/crl', '/ocsp', '/tsa', '/health'];
 
 function isBackendPath(pathname: string): boolean {
   return backendPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

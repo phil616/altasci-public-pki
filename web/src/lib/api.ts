@@ -11,6 +11,7 @@ import type {
   LoginResponse,
   Problem,
   SigningProfile,
+  TimestampAuthority,
   Subject,
   User,
   VersionInfo,
@@ -97,6 +98,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return (await response.json()) as T;
 }
 
+async function requestList<T>(path: string): Promise<ListResponse<T>> {
+  const response = await request<{ items?: T[] | null }>(path);
+  return { items: Array.isArray(response.items) ? response.items : [] };
+}
+
 async function download(path: string, filename: string, method = 'GET', body?: unknown): Promise<void> {
   const headers = new Headers({ Accept: 'application/x-pem-file, application/octet-stream' });
   const csrf = localStorage.getItem(CSRF_STORAGE_KEY);
@@ -149,6 +155,13 @@ export interface CreateRequestInput {
   requested_validity_seconds?: number;
 }
 
+export interface CreateTimestampAuthorityInput {
+  slug: string;
+  name: string;
+  policy_oid: string;
+  validity_seconds?: number;
+}
+
 export const consoleAPI = {
   login: async (input: { login: string; password: string; totp?: string }) => {
     const result = await request<LoginResponse>(`${consoleBase}/auth/login`, { method: 'POST', body: input });
@@ -176,7 +189,7 @@ export const consoleAPI = {
     request<CertificateAuthority>(`${consoleBase}/cas/intermediates`, { method: 'POST', body: input, idempotent: true }),
   exportCAKey: (id: string, password: string, totp: string) =>
     download(`${consoleBase}/cas/${id}/keys/export`, `${id}-ca-private-key.pem`, 'POST', { password, totp }),
-  profiles: (caID: string) => request<ListResponse<SigningProfile>>(`${consoleBase}/cas/${caID}/profiles`),
+  profiles: (caID: string) => requestList<SigningProfile>(`${consoleBase}/cas/${caID}/profiles`),
   createProfile: (caID: string, input: SigningProfileInput) =>
     request<SigningProfile>(`${consoleBase}/cas/${caID}/profiles`, { method: 'POST', body: input, idempotent: true }),
   updateProfile: (caID: string, profileID: string, input: SigningProfileInput) =>
@@ -185,6 +198,12 @@ export const consoleAPI = {
     }),
   deleteProfile: (caID: string, profileID: string) =>
     request<void>(`${consoleBase}/cas/${caID}/profiles/${profileID}`, { method: 'DELETE', idempotent: true }),
+  timestampAuthorities: (caID: string) =>
+    requestList<TimestampAuthority>(`${consoleBase}/cas/${caID}/timestamp-authorities`),
+  createTimestampAuthority: (caID: string, input: CreateTimestampAuthorityInput) =>
+    request<TimestampAuthority>(`${consoleBase}/cas/${caID}/timestamp-authorities`, {
+      method: 'POST', body: input, idempotent: true,
+    }),
   grants: (caID: string) => request<ListResponse<CAGrant>>(`${consoleBase}/cas/${caID}/grants`),
   createGrant: (caID: string, userID: string, permission: CAGrant['permission']) =>
     request<void>(`${consoleBase}/cas/${caID}/grants`, {

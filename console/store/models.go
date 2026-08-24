@@ -84,6 +84,40 @@ type OCSPResponder struct {
 	Status         string
 }
 
+// TimestampAuthority is one independently managed RFC 3161 Time-Stamping Unit.
+// Its private key fields are intentionally excluded from JSON responses.
+type TimestampAuthority struct {
+	ID             string    `json:"id"`
+	CAID           string    `json:"ca_id"`
+	Slug           string    `json:"slug"`
+	Name           string    `json:"name"`
+	PolicyOID      string    `json:"policy_oid"`
+	CertificatePEM string    `json:"certificate_pem"`
+	ChainPEM       string    `json:"chain_pem"`
+	EncryptedPKCS8 []byte    `json:"-"`
+	Nonce          []byte    `json:"-"`
+	KEKID          string    `json:"-"`
+	AllowedHashes  []string  `json:"allowed_hashes"`
+	NotBefore      time.Time `json:"not_before"`
+	NotAfter       time.Time `json:"not_after"`
+	Status         string    `json:"status"`
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type TimestampToken struct {
+	TSAID          string
+	Serial         string
+	HashAlgorithm  string
+	MessageImprint []byte
+	PolicyOID      string
+	Nonce          *string
+	GeneratedAt    time.Time
+	AccuracyMicros int64
+	TokenSHA256    []byte
+	TokenDER       []byte
+}
+
 type SigningProfile struct {
 	ID                 string          `json:"id"`
 	CAID               string          `json:"ca_id"`

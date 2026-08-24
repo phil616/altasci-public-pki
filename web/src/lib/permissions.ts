@@ -4,6 +4,7 @@ export type Capability =
   | 'manage_users'
   | 'create_ca'
   | 'manage_profiles'
+  | 'manage_tsa'
   | 'manage_grants'
   | 'export_ca_key'
   | 'decide_requests'
@@ -15,6 +16,7 @@ const capabilities: Record<Role, ReadonlySet<Capability>> = {
     'manage_users',
     'create_ca',
     'manage_profiles',
+    'manage_tsa',
     'manage_grants',
     'export_ca_key',
     'decide_requests',

@@ -424,6 +424,7 @@ PUBLIC_BASE_URL='https://pki.altasci.com'
 CONSOLE_BASE_URL='https://pki-console.altasci.com'
 
 TRUSTED_PROXY_CIDRS='127.0.0.1/32,::1/128'
+TSA_MAX_CLOCK_UNCERTAINTY='5s'
 ```
 
 注意：上面 `PKI_MASTER_KEYS` 的实际文件内容是合法 JSON，键和值外围是普通双引号；整段 JSON 外围使用单引号。不要在双引号前添加反斜杠。
@@ -447,6 +448,7 @@ sudo chmod 0750 /etc/pki-console
 - `PKI_MASTER_KEYS` 的每个值解码后必须恰好为 32 bytes；丢失旧 KEK 会导致对应 CA 私钥永久无法解密。
 - `PKI_ORIGIN_SHARED_SECRET` 必须是 64 个十六进制字符，与 Pages Secret 完全一致。
 - `TRUSTED_PROXY_CIDRS` 这里只信任本机 cloudflared。不要为了“获取真实 IP”直接信任 `0.0.0.0/0`。
+- `TSA_MAX_CLOCK_UNCERTAINTY` 是 RFC 3161 停签阈值。Linux 内核报告未同步或不确定度超过该值时，服务返回 `timeNotAvailable`，不得通过放宽阈值掩盖 NTP 故障。
 
 数据库备份与 `PKI_MASTER_KEYS` 必须分别加密、分别保管：只备份数据库无法恢复 CA 私钥；数据库和 KEK 同时泄漏则 CA 私钥可能被解密。
 
@@ -553,6 +555,7 @@ unit 使用 `User=pki-console`、`EnvironmentFile=/etc/pki-console/pki-console.e
 - [ ] `/etc/pki-console/pki-console.env` 的所有者和权限正确。
 - [ ] root 密码、TOTP、数据库密码、KEK、origin 共享密钥均为新的生产随机值，且相互不同。
 - [ ] TOTP 已导入至少一个受控设备，服务器和设备时间同步。
+- [ ] chrony/systemd-timesyncd 正常，`timedatectl show -p NTPSynchronized` 返回 `yes`，内核未设置 `STA_UNSYNC`。
 - [ ] `PUBLIC_BASE_URL` 与 `CONSOLE_BASE_URL` 使用两个不同 HTTPS hostname。
 - [ ] `pki.altasci.com` 没有 Access，能够被未登录客户端访问。
 - [ ] Console Access 应用已启用，root Access 身份邮箱与 `ROOT_USER_EMAIL` 完全一致，Team Domain 和 `AUD` 正确。
@@ -613,6 +616,9 @@ curl --silent --show-error -o /dev/null -w '%{http_code}\n' \
 ```
 
 最后一条没有共享密钥的 origin 请求应返回 `403`。在浏览器打开 Console，先完成 Access 登录，再用 root 邮箱、root 密码和 SHA-256 TOTP 登录。创建一套非生产测试 CA/证书，检查申请、审批、签发、下载、吊销、CRL、OCSP 和审计事件全链路后，再创建正式根 CA。
+
+创建 TSU 后，按 [tsa.md](tsa.md) 的 OpenSSL 命令验证 `/tsa/{slug}`，并确认响应头为
+`application/timestamp-reply`、时间戳证书 EKU 为 critical 且只包含 Timestamping。
 
 全部通过后设置开机自启：
 

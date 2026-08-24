@@ -21,6 +21,8 @@ Reusable change, inspection, restore, rotation and incident forms are in
 For the Web workflow that builds one root, two path-length-zero issuing CAs,
 purpose-specific profiles and operator grants, see
 [enterprise-pki-web-setup.md](enterprise-pki-web-setup.md).
+For RFC 3161 time-stamping unit provisioning, client commands, clock health,
+and failure behavior, see [tsa.md](tsa.md).
 
 ## Native binary deployment
 
@@ -93,8 +95,8 @@ processes can run `/usr/local/bin/pki-console worker`; PostgreSQL `FOR UPDATE
 SKIP LOCKED` prevents two workers from claiming the same request.
 
 Production serves the same Pages build on `pki.altasci.com` and
-`pki-console.altasci.com`. Pages Functions proxy only the REST, AIA, CRL and
-OCSP paths through `pki-origin.altasci.com` and Cloudflare Tunnel. The Go
+`pki-console.altasci.com`. Pages Functions proxy only the REST, AIA, CRL, OCSP
+and RFC 3161 TSA paths through `pki-origin.altasci.com` and Cloudflare Tunnel. The Go
 process validates the shared origin secret and restores an allowlisted business
 hostname, so no Nginx process is required. Protect only the Console hostname
 with Cloudflare Access.
@@ -162,6 +164,7 @@ runtime role retains the schema privileges documented in the production guide.
 | `PKI_MASTER_KEY_ACTIVE_ID` | ID used for new AES-256-GCM envelopes |
 | `PKI_MASTER_KEYS` | JSON map from key ID to Base64 32-byte KEK |
 | `TRUSTED_PROXY_CIDRS` | Direct cloudflared peer networks; production normally trusts loopback only |
+| `TSA_MAX_CLOCK_UNCERTAINTY` | Maximum Linux kernel NTP uncertainty accepted for RFC 3161 issuance; defaults to `5s` |
 
 `PKI_DEVELOPMENT_INSECURE=true` allows HTTP base URLs only for local testing.
 It does not disable Cloudflare JWT checks for the root account.
@@ -184,7 +187,7 @@ configuration shown here and must remain access-restricted.
   in the process environment. OCSP uses a separate delegated responder
   certificate and encrypted key for each CA. Server-generated leaf keys can be
   downloaded once by the owner, after which their ciphertext is erased.
-- The public host offers CA certificates, CRLs, OCSP, status, and exact
+- The public host offers CA certificates, CRLs, OCSP, RFC 3161 timestamping, status, and exact
   fingerprint/issuer+serial lookup. It has no list or mutation endpoint for
   leaf certificates.
 - Audit events are append-only, hash-chained, and partitioned by month. The
@@ -223,7 +226,8 @@ PKI_TEST_DATABASE_URL='postgres://pki_console:password@127.0.0.1:5432/pki_consol
 They validate migrations, RBAC boundaries, approval separation, signing
 profiles, root/intermediate/delegated-OCSP creation, client and server-generated
 keys, idempotency, host separation, session/CSRF behavior, exact public lookup,
-CRL, OCSP, revocation, one-time key erasure, and audit-chain persistence.
+CRL, OCSP, RFC 3161/OpenSSL interoperability, revocation, one-time key erasure,
+and audit-chain persistence.
 
 The frontend quality gate includes ESLint, strict TypeScript, Vitest and a
 production Vite build:

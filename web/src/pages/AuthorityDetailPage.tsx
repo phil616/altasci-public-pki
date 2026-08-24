@@ -1,4 +1,4 @@
-import { DeleteOutlined, DownloadOutlined, KeyOutlined, LinkOutlined, PlusOutlined, SafetyOutlined, UserAddOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, DeleteOutlined, DownloadOutlined, KeyOutlined, LinkOutlined, PlusOutlined, SafetyOutlined, UserAddOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { App, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Row, Select, Space, Switch, Table, Tabs, Tag, Typography } from 'antd';
 import { useState, type ReactNode } from 'react';
@@ -7,13 +7,14 @@ import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '@/auth';
 import { ErrorAlert, LoadingScreen, PageHeader, PEMViewer, StatusTag } from '@/components/common';
-import { consoleAPI, type SigningProfileInput } from '@/lib/api';
+import { consoleAPI, type CreateTimestampAuthorityInput, type SigningProfileInput } from '@/lib/api';
 import { formatDate, formatDuration, shortID } from '@/lib/format';
 import { can } from '@/lib/permissions';
-import type { CAGrant, SigningProfile, User } from '@/types';
+import type { CAGrant, CertificateAuthority, SigningProfile, TimestampAuthority, User } from '@/types';
 
 const { Paragraph, Text } = Typography;
 interface ProfileValues extends Omit<SigningProfileInput, 'default_validity_seconds' | 'max_validity_seconds' | 'policy'> { default_days: number; max_days: number; policy_json: string }
+interface TimestampAuthorityValues extends Omit<CreateTimestampAuthorityInput, 'validity_seconds'> { validity_days: number }
 
 export function AuthorityDetailPage() {
   const { id = '' } = useParams();
@@ -22,15 +23,18 @@ export function AuthorityDetailPage() {
   const queryClient = useQueryClient();
   const authority = useQuery({ queryKey: ['authority', id], queryFn: () => consoleAPI.authority(id), enabled: Boolean(id) });
   const profiles = useQuery({ queryKey: ['profiles', id], queryFn: () => consoleAPI.profiles(id), enabled: Boolean(id) });
+  const timestampAuthorities = useQuery({ queryKey: ['timestamp-authorities', id], queryFn: () => consoleAPI.timestampAuthorities(id), enabled: Boolean(id) });
   const grants = useQuery({ queryKey: ['grants', id], queryFn: () => consoleAPI.grants(id), enabled: Boolean(id) && can(user?.role, 'manage_grants') });
   const users = useQuery({ queryKey: ['users'], queryFn: consoleAPI.users, enabled: can(user?.role, 'manage_grants') });
   const [profileOpen, setProfileOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<SigningProfile>();
   const [grantOpen, setGrantOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [timestampAuthorityOpen, setTimestampAuthorityOpen] = useState(false);
   const [profileForm] = Form.useForm<ProfileValues>();
   const [grantForm] = Form.useForm<{ user_id: string; permission: CAGrant['permission'] }>();
   const [exportForm] = Form.useForm<{ password: string; totp: string }>();
+  const [timestampAuthorityForm] = Form.useForm<TimestampAuthorityValues>();
 
   const profileMutation = useMutation({
     mutationFn: ({ profileID, input }: { profileID?: string; input: SigningProfileInput }) =>
@@ -48,10 +52,25 @@ export function AuthorityDetailPage() {
     onSuccess: () => { setExportOpen(false); exportForm.resetFields(); message.success('私钥已下载，请立即转移到安全介质'); },
     onError: (error) => message.error(error.message),
   });
+  const timestampAuthorityMutation = useMutation({
+    mutationFn: (values: TimestampAuthorityValues) => {
+      const { validity_days, ...input } = values;
+      return consoleAPI.createTimestampAuthority(id, { ...input, validity_seconds: validity_days * 86400 });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['timestamp-authorities', id] });
+      setTimestampAuthorityOpen(false);
+      timestampAuthorityForm.resetFields();
+      message.success('时间戳签名单元已创建');
+    },
+    onError: (error) => message.error(error.message),
+  });
 
-  if (authority.isPending || profiles.isPending) return <LoadingScreen />;
-  if (authority.error || profiles.error) return <ErrorAlert error={authority.error ?? profiles.error} />;
+  if (authority.isPending || profiles.isPending || timestampAuthorities.isPending) return <LoadingScreen />;
+  if (authority.error || profiles.error || timestampAuthorities.error) return <ErrorAlert error={authority.error ?? profiles.error ?? timestampAuthorities.error} />;
   const ca = authority.data;
+  const profileItems = profiles.data?.items ?? [];
+  const timestampAuthorityItems = timestampAuthorities.data?.items ?? [];
   const operatorUsers = (users.data?.items ?? []).filter((item) => item.role === 'operator' && item.status === 'active');
   const openProfile = (profile?: SigningProfile) => {
     setEditingProfile(profile);
@@ -85,6 +104,14 @@ export function AuthorityDetailPage() {
     { title: '授权时间', dataIndex: 'created_at', render: formatDate },
     { title: '操作', align: 'right', render: (_, item) => <Button danger type="text" onClick={() => void consoleAPI.deleteGrant(id, item.user_id, item.permission).then(() => queryClient.invalidateQueries({ queryKey: ['grants', id] }))}>撤销</Button> },
   ];
+  const timestampAuthorityColumns: ColumnsType<TimestampAuthority> = [
+    { title: '签名单元', render: (_, item) => <div><Text strong>{item.name}</Text><div><Text type="secondary">{item.slug}</Text></div></div> },
+    { title: '策略 OID', dataIndex: 'policy_oid', render: (value: string) => <Text code copyable>{value}</Text> },
+    { title: '摘要算法', responsive: ['lg'], render: (_, item) => <Space wrap>{item.allowed_hashes.map((hash) => <Tag key={hash}>{hash}</Tag>)}</Space> },
+    { title: '到期时间', dataIndex: 'not_after', responsive: ['md'], render: formatDate },
+    { title: '状态', dataIndex: 'status', render: (status: string) => <StatusTag status={status} /> },
+    { title: 'RFC 3161 地址', align: 'right', render: (_, item) => <Text copyable={{ text: timestampEndpoint(ca, item.slug) }} code>{timestampEndpoint(ca, item.slug)}</Text> },
+  ];
 
   return (
     <>
@@ -98,7 +125,8 @@ export function AuthorityDetailPage() {
             { key: 'path', label: '最大下级深度', children: ca.path_length }, { key: 'parent', label: '上级 CA', children: ca.parent_ca_id ? <Link to={`/authorities/${ca.parent_ca_id}`}>{shortID(ca.parent_ca_id)}</Link> : '自签名信任根' },
           ]} /></Card></Col><Col xs={24} xl={9}><Card className="endpoint-card" title="公开发布端点"><Endpoint icon={<DownloadOutlined />} label="Issuer" value={ca.issuer_url} /><Endpoint icon={<LinkOutlined />} label="CRL" value={ca.crl_url} /><Endpoint icon={<SafetyOutlined />} label="OCSP" value={ca.ocsp_url} /></Card></Col></Row> },
           { key: 'certificate', label: 'CA 证书', children: <Space orientation="vertical" size="large" className="full-width"><PEMViewer value={ca.certificate_pem} filename={`${ca.slug}.pem`} />{ca.chain_pem !== ca.certificate_pem ? <PEMViewer value={ca.chain_pem} filename={`${ca.slug}-chain.pem`} /> : null}</Space> },
-          { key: 'profiles', label: `签发策略 (${profiles.data?.items.length ?? 0})`, children: <Card className="content-card" title="签发策略" extra={can(user?.role, 'manage_profiles') ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openProfile()}>新建策略</Button> : null}><Table rowKey="id" columns={profileColumns} dataSource={profiles.data?.items ?? []} scroll={{ x: 800 }} pagination={false} /></Card> },
+          { key: 'profiles', label: `签发策略 (${profileItems.length})`, children: <Card className="content-card" title="签发策略" extra={can(user?.role, 'manage_profiles') ? <Button type="primary" icon={<PlusOutlined />} onClick={() => openProfile()}>新建策略</Button> : null}><Table rowKey="id" columns={profileColumns} dataSource={profileItems} scroll={{ x: 800 }} pagination={false} /></Card> },
+          ...(ca.kind === 'intermediate' ? [{ key: 'timestamp-authorities', label: `时间戳服务 (${timestampAuthorityItems.length})`, children: <Card className="content-card" title="RFC 3161 时间戳服务" extra={can(user?.role, 'manage_tsa') ? <Button type="primary" icon={<ClockCircleOutlined />} onClick={() => { timestampAuthorityForm.setFieldsValue({ validity_days: 730 }); setTimestampAuthorityOpen(true); }}>新建签名单元</Button> : null}><Paragraph type="secondary">每个签名单元使用独立 RSA-3072 私钥和只包含 critical timestamping EKU 的证书。服务支持 SHA-256/384/512，并在时间源不健康或落账失败时拒绝签发。</Paragraph><Table rowKey="id" columns={timestampAuthorityColumns} dataSource={timestampAuthorityItems} scroll={{ x: 980 }} pagination={false} /></Card> }] : []),
           ...(can(user?.role, 'manage_grants') && ca.kind === 'intermediate' ? [{ key: 'grants', label: '运维授权', children: <Card className="content-card" title="CA 级权限" extra={<Button type="primary" icon={<UserAddOutlined />} onClick={() => setGrantOpen(true)}>添加授权</Button>}><Paragraph type="secondary">授权仅适用于当前中间 CA，根 CA 权限不可委派。</Paragraph><Table rowKey={(item) => `${item.user_id}:${item.permission}`} columns={grantColumns} dataSource={grants.data?.items ?? []} pagination={false} /></Card> }] : []),
         ]}
       />
@@ -121,6 +149,15 @@ export function AuthorityDetailPage() {
           <Form.Item name="permission" label="权限" tooltip="查看、审批、签发和吊销彼此独立；按最小权限原则分别授予。" rules={[{ required: true }]}><Select options={[{ value: 'view_requests', label: '查看申请与证书' }, { value: 'approve', label: '审批申请' }, { value: 'issue', label: '执行签发' }, { value: 'revoke', label: '吊销证书' }]} /></Form.Item>
         </Form>
       </Modal>
+      <Modal title="新建 RFC 3161 时间戳签名单元" open={timestampAuthorityOpen} onCancel={() => setTimestampAuthorityOpen(false)} onOk={() => timestampAuthorityForm.submit()} confirmLoading={timestampAuthorityMutation.isPending} okText="创建" destroyOnHidden>
+        <Paragraph type="secondary">签名单元必须挂在活动的中间 CA 下。创建后，客户端通过公开地址提交 application/timestamp-query DER 请求。</Paragraph>
+        <Form form={timestampAuthorityForm} layout="vertical" requiredMark={false} onFinish={(values) => timestampAuthorityMutation.mutate(values)}>
+          <Form.Item name="name" label="签名单元名称" rules={[{ required: true }, { max: 128 }]}><Input placeholder="Release Time-Stamping Unit" /></Form.Item>
+          <Form.Item name="slug" label="公开路径标识" extra="最终地址为 /tsa/{slug}，创建后应保持稳定。" rules={[{ required: true }, { pattern: /^[a-z0-9][a-z0-9-]{1,62}$/, message: '请输入 2-63 位小写字母、数字或连字符' }]}><Input placeholder="release-tsa" /></Form.Item>
+          <Form.Item name="policy_oid" label="TSA 策略 OID" tooltip="应使用组织拥有的 OID 分支；请求指定其他策略时服务会返回 unacceptedPolicy。" rules={[{ required: true }, { pattern: /^[0-2](?:\.[0-9]+)+$/, message: '请输入点分十进制 OID' }]}><Input className="code-input" placeholder="1.3.6.1.4.1.你的企业号.1.1" /></Form.Item>
+          <Form.Item name="validity_days" label="签名证书有效期（天）" rules={[{ required: true }]}><InputNumber min={1} max={1095} className="full-width" /></Form.Item>
+        </Form>
+      </Modal>
       <Modal title="导出 CA 私钥" open={exportOpen} onCancel={() => setExportOpen(false)} onOk={() => exportForm.submit()} confirmLoading={exportMutation.isPending} okText="验证并下载" okButtonProps={{ danger: true }} destroyOnHidden>
         <Paragraph type="danger">这是最高风险操作。响应不会缓存，操作会写入审计链；下载后请立即转移到受控安全介质。</Paragraph>
         <Form form={exportForm} layout="vertical" onFinish={(values) => exportMutation.mutate(values)} requiredMark={false}>
@@ -134,4 +171,14 @@ export function AuthorityDetailPage() {
 
 function Endpoint({ icon, label, value }: { icon: ReactNode; label: string; value?: string | null }) {
   return <div className="endpoint-row"><span>{icon}</span><div><Text type="secondary">{label}</Text>{value ? <Typography.Link href={value} target="_blank" rel="noreferrer">{value}</Typography.Link> : <Text>未配置</Text>}</div></div>;
+}
+
+function timestampEndpoint(authority: CertificateAuthority, slug: string): string {
+  const publicationURL = authority.issuer_url ?? authority.ocsp_url ?? authority.crl_url;
+  if (!publicationURL) return `/tsa/${slug}`;
+  try {
+    return new URL(`/tsa/${slug}`, publicationURL).toString();
+  } catch {
+    return `/tsa/${slug}`;
+  }
 }

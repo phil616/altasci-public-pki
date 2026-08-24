@@ -19,6 +19,7 @@ import (
 	"github.com/cloudflare/cfssl/console/pki"
 	"github.com/cloudflare/cfssl/console/security"
 	"github.com/cloudflare/cfssl/console/store"
+	"github.com/cloudflare/cfssl/console/tsa"
 )
 
 var version = "dev"
@@ -75,10 +76,15 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	tsaService, err := tsa.NewService(data, security.Keyring{ActiveID: cfg.MasterKeyActiveID, Keys: cfg.MasterKeys},
+		tsa.NewSystemTimeSource(cfg.TSAMaxClockUncertainty, !cfg.DevelopmentInsecure))
+	if err != nil {
+		return err
+	}
 	if command == "worker" {
 		return runWorker(ctx, pkiService, logger, instanceID())
 	}
-	api, err := httpapi.New(cfg, data, authService, pkiService, logger)
+	api, err := httpapi.New(cfg, data, authService, pkiService, tsaService, logger)
 	if err != nil {
 		return err
 	}

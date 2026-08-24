@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -21,10 +22,18 @@ import (
 	"github.com/cloudflare/cfssl/console/pki"
 	"github.com/cloudflare/cfssl/console/security"
 	"github.com/cloudflare/cfssl/console/store"
+	"github.com/cloudflare/cfssl/console/tsa"
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/helpers"
+	dtimestamp "github.com/digitorus/timestamp"
 	"golang.org/x/crypto/ocsp"
 )
+
+type httpTestTimeSource struct{}
+
+func (httpTestTimeSource) Now(context.Context) (tsa.Moment, error) {
+	return tsa.Moment{Time: time.Now().UTC().Truncate(time.Second), Accuracy: 100 * time.Millisecond}, nil
+}
 
 func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	databaseURL := os.Getenv("PKI_TEST_DATABASE_URL")
@@ -41,7 +50,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, err = pool.Exec(ctx, `TRUNCATE audit_events, audit_chain_heads, ocsp_responses, crls,
+	_, err = pool.Exec(ctx, `TRUNCATE timestamp_tokens, timestamp_authorities, audit_events, audit_chain_heads, ocsp_responses, crls,
         revocations, leaf_key_artifacts, certificates, issuance_jobs, request_approvals,
         certificate_requests, ca_grants, signing_profiles, ocsp_responders, ca_key_versions,
         certificate_authorities, idempotency_keys, sessions, users CASCADE`)
@@ -49,6 +58,20 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := store.New(pool)
+	emptyProfiles, err := data.ListProfiles(ctx, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyProfiles == nil {
+		t.Fatal("empty signing profile list must encode as [] rather than null")
+	}
+	emptyTimestampAuthorities, err := data.ListTimestampAuthorities(ctx, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyTimestampAuthorities == nil {
+		t.Fatal("empty timestamp authority list must encode as [] rather than null")
+	}
 	password := "ordinary-user-password-long-enough"
 	hash, _ := security.HashPassword(password)
 	user, err := data.CreateUser(ctx, "alice", nil, "user", hash)
@@ -68,7 +91,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 		RootUserTOTPSecret: bytes.Repeat([]byte{1}, 20), AccessTeamDomain: "https://example.cloudflareaccess.com",
 		AccessAudience: "test-audience", MasterKeyActiveID: "v1", MasterKeys: map[string][]byte{"v1": bytes.Repeat([]byte{2}, 32)},
 		SessionIdle: time.Hour, SessionMax: 8 * time.Hour, RootSessionIdle: 15 * time.Minute,
-		RootSessionMax: time.Hour, DevelopmentInsecure: true}
+		RootSessionMax: time.Hour, TSAMaxClockUncertainty: 5 * time.Second, DevelopmentInsecure: true}
 	access, err := security.NewAccessVerifier(cfg.AccessTeamDomain, cfg.AccessAudience, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +104,12 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, err := New(cfg, data, authService, pkiService, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	tsaService, err := tsa.NewService(data, security.Keyring{ActiveID: "v1", Keys: cfg.MasterKeys},
+		httpTestTimeSource{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(cfg, data, authService, pkiService, tsaService, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +126,30 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	}
 	if _, err := pkiService.GenerateCRL(ctx, intermediate.ID); err != nil {
 		t.Fatal(err)
+	}
+	timestampAuthority, err := tsaService.CreateAuthority(ctx, root, tsa.CreateAuthorityInput{
+		CAID: intermediate.ID, Slug: "release-tsa", Name: "Release TSU", PolicyOID: "1.3.6.1.4.1.55555.1.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timestampRequestDER, err := dtimestamp.CreateRequest(bytes.NewReader([]byte("release artifact")),
+		&dtimestamp.RequestOptions{Hash: crypto.SHA256, Certificates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timestampRequest := httptest.NewRequest(http.MethodPost,
+		"http://pki.example.test/tsa/"+timestampAuthority.Slug, bytes.NewReader(timestampRequestDER))
+	timestampRequest.Host = cfg.PublicHostname
+	timestampRequest.Header.Set("Content-Type", "application/timestamp-query")
+	timestampRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(timestampRecorder, timestampRequest)
+	if timestampRecorder.Code != http.StatusOK || timestampRecorder.Header().Get("Content-Type") != "application/timestamp-reply" {
+		t.Fatalf("timestamp endpoint status=%d type=%q body=%x", timestampRecorder.Code,
+			timestampRecorder.Header().Get("Content-Type"), timestampRecorder.Body.Bytes())
+	}
+	if _, err := dtimestamp.ParseResponse(timestampRecorder.Body.Bytes()); err != nil {
+		t.Fatalf("timestamp response is invalid: %v", err)
 	}
 	csrPEM, _, err := csr.ParseRequest(&csr.CertificateRequest{CN: "api.example.test", Hosts: []string{"api.example.test"},
 		KeyRequest: &csr.KeyRequest{A: "rsa", S: 2048}})

@@ -6,6 +6,7 @@
     "/issuers/*",
     "/crl/*",
     "/ocsp/*",
+    "/tsa/*",
     "/health/*"
   ],
   "exclude": []

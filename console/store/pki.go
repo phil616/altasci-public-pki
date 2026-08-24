@@ -162,7 +162,7 @@ func (s *Store) ListProfiles(ctx context.Context, caID string) ([]SigningProfile
 		return nil, err
 	}
 	defer rows.Close()
-	var profiles []SigningProfile
+	profiles := make([]SigningProfile, 0)
 	for rows.Next() {
 		profile, err := scanProfile(rows)
 		if err != nil {
