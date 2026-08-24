@@ -6,8 +6,20 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import App from './App';
+import { handleVitePreloadError } from './lib/preload-recovery';
 import { ThemeProvider } from './theme';
 import './styles.css';
+
+let preloadRecoveryStorage: Storage | undefined;
+try {
+  preloadRecoveryStorage = window.sessionStorage;
+} catch {
+  // Some hardened browser profiles disable session storage.
+}
+
+window.addEventListener('vite:preloadError', (event) => {
+  handleVitePreloadError(event, preloadRecoveryStorage, () => window.location.reload());
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {

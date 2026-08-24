@@ -194,6 +194,24 @@ npx --no-install wrangler pages deploy dist \
   --branch main
 ```
 
+`npm run check` 已包含生产构建，不能省略，也不要单独发布上一次遗留的 `dist`。
+Pages 发布采用新 deployment 切换；已经打开页面的浏览器仍可能持有旧入口，并在切换后请求已经不存在的
+Vite 延迟加载分块。前端监听官方的 `vite:preloadError` 事件并最多自动刷新一次，避免空白页和刷新循环。
+
+发布后先验证入口和一个实际带哈希的 JavaScript 资源；两者应分别返回 `text/html` 和
+`application/javascript`：
+
+```sh
+curl --fail --silent --show-error --head https://pki.altasci.com/
+ASSET_PATH="$(sed -n 's/.*src="\([^\"]*\.js\)".*/\1/p' dist/index.html | head -n 1)"
+test -n "$ASSET_PATH"
+curl --fail --silent --show-error --head "https://pki.altasci.com${ASSET_PATH}"
+```
+
+Cloudflare Pages Web Analytics 会自动注入 `static.cloudflareinsights.com` 的 beacon。仓库 CSP 只放行该
+脚本域名，自动注入模式仍将数据发送到本站的 `/cdn-cgi/rum`，因此 `connect-src 'self'` 足够；不要为消除
+控制台提示而加入 `'unsafe-inline'` 或通配脚本来源。
+
 `web/wrangler.jsonc` 是普通变量的 source of truth。Secret 不放在该文件中。GitHub tag workflow 使用独立的 `CLOUDFLARE_API_TOKEN`，本机 Wrangler OAuth 不会自动提供给 GitHub Actions。
 
 ## 密钥轮换

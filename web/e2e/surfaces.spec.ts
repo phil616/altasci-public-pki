@@ -32,7 +32,7 @@ test('renders the protected login experience', async ({ page }) => {
   await mockAnonymous(page);
   await page.goto('/login');
   await expect(page.getByRole('heading', { name: '登录控制台' })).toBeVisible();
-  await expect(page.getByText('让每一次签发')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'AltasCI PKI Web管理平台' })).toBeVisible();
   await expect(page.getByRole('button', { name: '安全登录' })).toBeVisible();
 });
 
@@ -50,16 +50,23 @@ test('renders the role-aware console dashboard', async ({ page }) => {
 test('renders the public repository without a session', async ({ page }) => {
   await page.route('**/pki/v1/authorities', (route) => route.fulfill({ json: { items: [] } }));
   await page.goto('http://pki.localhost:5173/');
-  await expect(page.getByRole('heading', { name: /验证信任/ })).toBeVisible();
-  await expect(page.getByRole('link', { name: '精确查询证书' })).toBeVisible();
-  await expect(page.getByText('公开验证，不公开枚举。')).toBeVisible();
+  await expect(page.getByRole('heading', { name: /AltasCI PKI/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: '开始精确查询' })).toBeVisible();
+  await expect(page.getByText('叶证书不可枚举。')).toBeVisible();
 });
 
 test('renders the public PKI about page', async ({ page }) => {
   await page.goto('http://pki.localhost:5173/about');
   await expect(page.getByRole('heading', { name: '关于 PKI', exact: true })).toBeVisible();
   await expect(page.getByText(/基于 Cloudflare CFSSL 源码构建/)).toBeVisible();
-  await expect(page.getByRole('link', { name: '了解更多' })).toHaveAttribute('href', 'https://example.com');
+  await expect(page.getByRole('link', { name: /了解更多关于AltasCI PKI/ })).toHaveAttribute(
+    'href',
+    'https://github.com/phil616/altasci-public-pki',
+  );
+  await expect(page.getByRole('link', { name: /了解更多关于Cloudflare CFSSL/ })).toHaveAttribute(
+    'href',
+    'https://github.com/cloudflare/cfssl',
+  );
 });
 
 test('renders every primary Console workspace', async ({ page }) => {
