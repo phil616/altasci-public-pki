@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "include": [
+    "/api/*",
+    "/pki/*",
+    "/issuers/*",
+    "/crl/*",
+    "/ocsp/*",
+    "/health/*"
+  ],
+  "exclude": []
+}

@@ -1,0 +1,228 @@
+name: Release PKI-Console
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  code: read
+  releases: write
+
+jobs:
+  release:
+    name: Build, publish and deploy
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -mod=vendor
+      GOPROXY: "off"
+      GOTOOLCHAIN: local
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      CLOUDFLARE_PAGES_PRODUCTION_BRANCH: ${{ vars.CLOUDFLARE_PAGES_PRODUCTION_BRANCH }}
+      GITEA_RELEASE_TOKEN: ${{ secrets.GITEA_TOKEN }}
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must be SemVer with a v prefix, for example v1.2.3" >&2
+            exit 1
+          fi
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CLOUDFLARE_PAGES_PRODUCTION_BRANCH GITEA_RELEASE_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Required Actions variable or secret is empty: $name" >&2
+              exit 1
+            fi
+          done
+          for command in curl git jq sha256sum; do
+            command -v "$command" >/dev/null || {
+              echo "Required runner command is missing: $command" >&2
+              exit 1
+            }
+          done
+          git fetch --no-tags origin \
+            "refs/heads/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}:refs/remotes/origin/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" \
+            "refs/remotes/origin/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}"; then
+            echo "The tagged commit is not on the configured production branch" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Test the backend
+        run: |
+          go test ./console/... ./cmd/pki-console
+          go vet ./console/... ./cmd/pki-console
+
+      - name: Install, test and build the frontend and Functions
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check
+          test -f dist/_routes.json
+          test -f dist/_redirects
+          test -f dist/_headers
+
+      - name: Build backend release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          for arch in amd64 arm64; do
+            output="release/pki-console_${version}_linux_${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -buildvcs=true \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "$output" ./cmd/pki-console
+          done
+          (
+            cd release
+            sha256sum pki-console_* > SHA256SUMS
+          )
+
+      - name: Prepare a draft Gitea release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_base="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases"
+          encoded_tag="$(jq -rn --arg value "$GITHUB_REF_NAME" '$value | @uri')"
+          response_file="$(mktemp)"
+          status="$(curl --silent --show-error \
+            --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+            --output "$response_file" --write-out '%{http_code}' \
+            "${release_base}/tags/${encoded_tag}")"
+
+          case "$status" in
+            200)
+              if [[ "$(jq -r '.draft' "$response_file")" != "true" ]]; then
+                echo "A published release already exists for ${GITHUB_REF_NAME}; refusing to overwrite it" >&2
+                exit 1
+              fi
+              release_id="$(jq -er '.id' "$response_file")"
+              ;;
+            404)
+              # Older Gitea versions may not return a draft from the by-tag
+              # endpoint. Check the authenticated draft list before creating.
+              curl --fail --silent --show-error \
+                --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+                "${release_base}?draft=true&limit=50" > "$response_file"
+              draft_count="$(jq --arg tag "$GITHUB_REF_NAME" \
+                '[.[] | select(.tag_name == $tag and .draft == true)] | length' \
+                "$response_file")"
+              if [[ "$draft_count" -gt 1 ]]; then
+                echo "Multiple draft releases exist for ${GITHUB_REF_NAME}; clean them up manually" >&2
+                exit 1
+              fi
+              if [[ "$draft_count" -eq 1 ]]; then
+                release_id="$(jq -er --arg tag "$GITHUB_REF_NAME" \
+                  '.[] | select(.tag_name == $tag and .draft == true) | .id' \
+                  "$response_file")"
+              else
+                prerelease=false
+                [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=true
+                payload="$(jq -n \
+                  --arg tag "$GITHUB_REF_NAME" \
+                  --arg sha "$GITHUB_SHA" \
+                  --argjson prerelease "$prerelease" \
+                  '{tag_name:$tag,target_commitish:$sha,name:$tag,body:"Automated PKI-Console release.",draft:true,prerelease:$prerelease}')"
+                curl --fail --silent --show-error --request POST \
+                  --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+                  --header 'Content-Type: application/json' \
+                  --data "$payload" "${release_base}" > "$response_file"
+                release_id="$(jq -er '.id' "$response_file")"
+              fi
+              ;;
+            *)
+              echo "Gitea release lookup failed with HTTP ${status}" >&2
+              cat "$response_file" >&2
+              exit 1
+              ;;
+          esac
+
+          # A retry replaces only this workflow's release assets.
+          curl --fail --silent --show-error \
+            --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+            "${release_base}/${release_id}/assets" > "$response_file"
+          while read -r asset_id; do
+            [[ -z "$asset_id" ]] && continue
+            curl --fail --silent --show-error --request DELETE \
+              --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+              "${release_base}/${release_id}/assets/${asset_id}"
+          done < <(jq -r '.[]?.id' "$response_file")
+
+          echo "GITEA_RELEASE_ID=${release_id}" >> "$GITHUB_ENV"
+          echo "GITEA_RELEASE_BASE=${release_base}" >> "$GITHUB_ENV"
+
+      - name: Upload backend release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in release/pki-console_* release/SHA256SUMS; do
+            filename="$(basename "$asset")"
+            encoded_name="$(jq -rn --arg value "$filename" '$value | @uri')"
+            curl --fail --silent --show-error --request POST \
+              --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+              --form "attachment=@${asset};type=application/octet-stream" \
+              "${GITEA_RELEASE_BASE}/${GITEA_RELEASE_ID}/assets?name=${encoded_name}" >/dev/null
+          done
+
+      - name: Deploy the frontend and Pages Functions
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler pages deploy dist \
+            --project-name="$CLOUDFLARE_PAGES_PROJECT" \
+            --branch="$CLOUDFLARE_PAGES_PRODUCTION_BRANCH" \
+            --commit-hash="$GITHUB_SHA" \
+            --commit-message="Release $GITHUB_REF_NAME" \
+            --commit-dirty=true
+
+      - name: Publish the Gitea release
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease=false
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=true
+          payload="$(jq -n \
+            --arg tag "$GITHUB_REF_NAME" \
+            --arg sha "$GITHUB_SHA" \
+            --arg project "$CLOUDFLARE_PAGES_PROJECT" \
+            --argjson prerelease "$prerelease" \
+            '{tag_name:$tag,target_commitish:$sha,name:$tag,body:("Backend binaries are attached. Frontend and Pages Functions were deployed to " + $project + "."),draft:false,prerelease:$prerelease}')"
+          curl --fail --silent --show-error --request PATCH \
+            --header "Authorization: token ${GITEA_RELEASE_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "${GITEA_RELEASE_BASE}/${GITEA_RELEASE_ID}" >/dev/null
+
+          {
+            echo "## PKI-Console ${GITHUB_REF_NAME}"
+            echo
+            echo "- Gitea release: published"
+            echo "- Backend: linux/amd64 and linux/arm64"
+            echo "- Cloudflare Pages project: ${CLOUDFLARE_PAGES_PROJECT}"
+            echo "- Commit: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"

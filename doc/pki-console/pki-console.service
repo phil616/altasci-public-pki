@@ -1,0 +1,41 @@
+[Unit]
+Description=PKI-Console enterprise PKI API
+Documentation=file:/usr/local/share/doc/pki-console/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pki-console
+Group=pki-console
+EnvironmentFile=/etc/pki-console/pki-console.env
+ExecStart=/usr/local/bin/pki-console serve
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
