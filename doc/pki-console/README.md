@@ -7,8 +7,8 @@ execute CFSSL binaries and does not register the legacy unauthenticated
 
 For the complete Cloudflare Pages, external PostgreSQL, Cloudflare Tunnel and
 systemd production procedure, see [production-deployment.md](production-deployment.md).
-For tag-driven Gitea Releases and Wrangler deployment, see
-[gitea-actions-release.md](gitea-actions-release.md).
+For tag-driven GitHub Releases and Wrangler deployment, see
+[github-actions-release.md](github-actions-release.md).
 
 ## Native binary deployment
 

@@ -9,8 +9,8 @@ package documentation continue below.
 
 The step-by-step production runbook is
 [`doc/pki-console/production-deployment.md`](doc/pki-console/production-deployment.md).
-The Gitea tag release and Cloudflare Wrangler workflow is documented in
-[`doc/pki-console/gitea-actions-release.md`](doc/pki-console/gitea-actions-release.md).
+The GitHub tag release and Cloudflare Wrangler workflow is documented in
+[`doc/pki-console/github-actions-release.md`](doc/pki-console/github-actions-release.md).
 
 # CFSSL
 
