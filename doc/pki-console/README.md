@@ -9,12 +9,24 @@ For the complete Cloudflare Pages, external PostgreSQL, Cloudflare Tunnel and
 systemd production procedure, see [production-deployment.md](production-deployment.md).
 For tag-driven GitHub Releases and Wrangler deployment, see
 [github-actions-release.md](github-actions-release.md).
+For the current Cloudflare resources, completed Wrangler operations and
+maintenance procedure, see
+[cloudflare-wrangler-operations.md](cloudflare-wrangler-operations.md).
+For daily checks, monitoring, backup/restore, rotation, rollback and incident
+response, see [operations-runbook.md](operations-runbook.md). The resolved
+2026-08-24 Access login incident is documented in
+[incident-2026-08-24-access-login.md](incident-2026-08-24-access-login.md).
+Reusable change, inspection, restore, rotation and incident forms are in
+[operations-record-templates.md](operations-record-templates.md).
 
 ## Native binary deployment
 
 PKI-Console is distributed as a statically linked Go binary. It does not ship
-or start a database, container, or embedded persistence layer. All persistent
-state is stored in the external PostgreSQL instance named by `DATABASE_URL`.
+or start an application container, database, or embedded persistence layer.
+All persistent state is stored in the independently managed PostgreSQL instance
+named by `DATABASE_URL`. The current production PostgreSQL happens to run in a
+same-host 1Panel container; the PKI-Console application itself remains a native
+systemd service.
 Backups, replication, failover, connection routing, and storage encryption are
 therefore owned by that database platform.
 
@@ -34,7 +46,9 @@ install -o root -g root -m 0755 bin/pki-console /usr/local/bin/pki-console
 ```
 
 Build the React 19 application with Node.js 20.19 or newer. `npm ci` uses the
-committed lock file, and the production output contains static files only:
+committed lock file. Vite produces the static client bundle, while Wrangler
+separately compiles the sibling `web/functions` proxy into the same Pages
+deployment:
 
 ```sh
 cd web
@@ -46,12 +60,12 @@ cd ..
 make pki-console-system
 ```
 
-Install `web/dist` on the reverse-proxy host. Node.js is not required at
-runtime:
+Deploy `web/dist` and `web/functions` together from the `web` directory. Node.js
+is not required on the Go production server:
 
 ```sh
-install -d -o root -g root -m 0755 /var/www/pki-console
-cp -a web/dist/. /var/www/pki-console/
+cd web
+npx --no-install wrangler pages deploy dist --project-name pki-web --branch main
 ```
 
 Create the external PostgreSQL database and role using your database platform,
@@ -75,11 +89,12 @@ The server includes an issuance worker. Additional, separately scalable worker
 processes can run `/usr/local/bin/pki-console worker`; PostgreSQL `FOR UPDATE
 SKIP LOCKED` prevents two workers from claiming the same request.
 
-Production must terminate HTTPS at a trusted proxy, serve the same static build
-on `pki.example.com` and `pki-console.example.com`, and proxy only the REST,
-AIA, CRL and OCSP paths to the Go process while preserving the `Host` header.
-Protect only the Console hostname with Cloudflare Access. A complete two-host
-Nginx example is provided in `doc/pki-console/nginx.conf.example`.
+Production serves the same Pages build on `pki.altasci.com` and
+`pki-console.altasci.com`. Pages Functions proxy only the REST, AIA, CRL and
+OCSP paths through `pki-origin.altasci.com` and Cloudflare Tunnel. The Go
+process validates the shared origin secret and restores an allowlisted business
+hostname, so no Nginx process is required. Protect only the Console hostname
+with Cloudflare Access.
 
 ### Local web development
 
@@ -132,9 +147,10 @@ runtime role retains the schema privileges documented in the production guide.
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | External PostgreSQL URL; production should use `sslmode=verify-full` and a trusted CA |
+| `DATABASE_URL` | Independently managed PostgreSQL URL; explicit same-host loopback may use `sslmode=disable`, remote production databases should use `verify-full` |
 | `PUBLIC_BASE_URL` | Public AIA, CRL, OCSP and exact-lookup origin |
 | `CONSOLE_BASE_URL` | Authenticated Console origin |
+| `PKI_ORIGIN_SHARED_SECRET` | 64 hexadecimal characters shared only with the Pages Function; required in production |
 | `ROOT_USER_EMAIL` | Unique super-administrator email |
 | `ROOT_USER_PASSWORD` | Root password, at least 32 characters |
 | `ROOT_USER_TOTP_SECRET` | Unpadded Base32 secret, at least 160 bits |
@@ -142,6 +158,7 @@ runtime role retains the schema privileges documented in the production guide.
 | `CF_ACCESS_AUD` | Access application audience tag |
 | `PKI_MASTER_KEY_ACTIVE_ID` | ID used for new AES-256-GCM envelopes |
 | `PKI_MASTER_KEYS` | JSON map from key ID to Base64 32-byte KEK |
+| `TRUSTED_PROXY_CIDRS` | Direct cloudflared peer networks; production normally trusts loopback only |
 
 `PKI_DEVELOPMENT_INSECURE=true` allows HTTP base URLs only for local testing.
 It does not disable Cloudflare JWT checks for the root account.
@@ -175,6 +192,14 @@ configuration shown here and must remain access-restricted.
 - Login and OCSP endpoints have application-level rate limits. Forwarded client
   addresses are used only when the direct peer belongs to `TRUSTED_PROXY_CIDRS`;
   production deployments should also enforce rate limits at Cloudflare.
+- Production HTTP requests must arrive from a trusted local Tunnel connector,
+  present the origin shared secret, and select one of the two configured
+  hostnames before they can reach any public or Console handler.
+- For Console requests, Pages transports the JWT email claim in a private
+  `X-PKI-*` header because Cloudflare may remove reserved `Cf-Access-*` headers
+  from subrequests. The Go gateway accepts it only after proxy, secret, and host
+  checks, then the Access verifier still validates the signed JWT and all email
+  values. The Function-side claim extraction does not establish trust.
 
 ## Test suites
 

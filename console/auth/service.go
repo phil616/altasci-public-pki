@@ -89,15 +89,15 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	user, err := s.store.UserByLogin(ctx, strings.TrimSpace(input.Login))
 	if err != nil {
 		_, _ = security.VerifyPassword(input.Password, s.dummy)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, invalidCredentials("user_lookup", err)
 	}
 	if user.Status == "disabled" || (user.LockedUntil != nil && user.LockedUntil.After(now)) {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, invalidCredentials("account_state", nil)
 	}
 	passwordOK, verifyErr := security.VerifyPassword(input.Password, user.PasswordHash)
 	if verifyErr != nil || !passwordOK {
 		_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, invalidCredentials("password", verifyErr)
 	}
 
 	var totpStep int64
@@ -106,17 +106,17 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		identity, err := s.access.Verify(ctx, input.AccessJWT, input.AccessEmailHeader, s.config.RootUserEmail)
 		if err != nil {
 			_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-			return LoginResult{}, ErrInvalidCredentials
+			return LoginResult{}, invalidCredentials("access", err)
 		}
 		accessSub = identity.Subject
 		totpStep, err = security.VerifyTOTP(s.config.RootUserTOTPSecret, input.TOTP, now, user.TOTPLastStep)
 		if err != nil {
 			_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-			return LoginResult{}, ErrInvalidCredentials
+			return LoginResult{}, invalidCredentials("totp", err)
 		}
 	}
 	if err := s.store.AcceptLogin(ctx, user, totpStep, now); err != nil {
-		return LoginResult{}, ErrInvalidCredentials
+		return LoginResult{}, invalidCredentials("accept", err)
 	}
 
 	token, tokenHash, err := security.NewToken()
@@ -137,6 +137,13 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	}
 	return LoginResult{User: user, SessionID: sessionID, Token: token, CSRFToken: csrfToken,
 		ExpiresAt: now.Add(absolute), AccessSub: accessSub}, nil
+}
+
+func invalidCredentials(stage string, cause error) error {
+	if cause != nil {
+		return fmt.Errorf("%w at %s: %v", ErrInvalidCredentials, stage, cause)
+	}
+	return fmt.Errorf("%w at %s", ErrInvalidCredentials, stage)
 }
 
 func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method, accessJWT, accessEmail string) (Principal, error) {

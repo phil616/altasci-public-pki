@@ -38,13 +38,13 @@ Cf-Access-Jwt-Assertion: eyJhbGciOiJSUzI1NiIs...
 额外的，由于CFSSL提供了源码和吊销管理，所以你需要公开一个域名专门用于开放信息查询，也就是说外部会通过两个不同的域名访问这个项目
 
 ```
-pki.example.com
+pki.altasci.com
 ```
 
 这个域名是公开信息，所有人都可以查看证书列表，下载证书，吊销节点，查询证书状态等。同时也是签证书时候的URI所指示的地方，允许互联网所有设备和人员检查和访问。
 
 ```
-pki-console.example.com
+pki-console.altasci.com
 ```
 
 则是访问Console的地方，可以登录和管理。

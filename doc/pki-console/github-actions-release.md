@@ -1,8 +1,10 @@
 # GitHub Actions 自动发布与 Cloudflare Pages 部署
 
-该方案在 GitHub 收到 `v*` SemVer tag 时执行一次受控发布：测试完整项目、构建 Linux 后端二进制、创建 GitHub Release，并用 Wrangler 把 React 静态文件和 Pages Functions 一起部署到 Cloudflare Pages。
+该方案在 GitHub 收到 `v*` tag 时执行一次受控发布：测试项目、构建 Linux 后端二进制、用 Wrangler 部署 React 和 Pages Functions，并在部署成功后创建 GitHub Release。
 
 工作流文件位于 `.github/workflows/release.yaml`。
+
+这是仓库唯一保留的 workflow。不构建或发布 Docker 镜像，不运行上游 CFSSL 的旧版数据库矩阵、快照和 Cloudflare 内部 Semgrep 流程。
 
 ## 发布边界
 
@@ -43,8 +45,7 @@ permissions:
 | Variable | 示例 | 说明 |
 | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID | 非 API Token |
-| `CLOUDFLARE_PAGES_PROJECT` | `pki-console` | 已创建的 Pages 项目名称 |
-| `CLOUDFLARE_PAGES_PRODUCTION_BRANCH` | `main` | 必须与 Pages production branch 一致 |
+| `CLOUDFLARE_PAGES_PROJECT` | `pki-web` | 已创建的 Pages 项目名称 |
 
 在 **Settings > Secrets and variables > Actions > Secrets** 添加：
 
@@ -56,33 +57,29 @@ permissions:
 
 ## Cloudflare Pages 配置
 
-Pages 项目应预先创建，production branch 与 `CLOUDFLARE_PAGES_PRODUCTION_BRANCH` 一致。工作流不会自动创建项目，以避免 tag 发布时误建同名项目。
+Pages 项目应预先创建，并将 production branch 配置为 `main`。工作流不会自动创建项目，以避免 tag 发布时误建同名项目。
 
-Production 环境必须已有这些 Function bindings：
+`web/wrangler.jsonc` 是 Pages 非敏感配置的 source of truth，并声明以下 Function bindings：
 
 | 名称 | 类型 |
 | --- | --- |
 | `PKI_ORIGIN_URL` | 普通变量 |
 | `PKI_PUBLIC_HOST` | 普通变量 |
 | `PKI_CONSOLE_HOST` | 普通变量 |
-| `PKI_ORIGIN_SHARED_SECRET` | 加密 Secret |
+| `PKI_ORIGIN_SHARED_SECRET` | 加密 Secret，仅在 Cloudflare 保存 |
 
-当前仓库没有提交 `wrangler.jsonc`，因此 Dashboard 继续管理 Pages 运行时变量和 Secret。Wrangler tag 部署只更新静态资源与 Function 代码。
-
-如果以后运行 `wrangler pages download config` 并提交含 `pages_build_output_dir` 的配置，该文件会成为 Pages 配置的 source of truth；提交前必须确认 production/preview bindings 完整，避免覆盖 Dashboard 配置。
+普通变量、兼容日期和 `pages_build_output_dir` 随 Git 版本维护。`PKI_ORIGIN_SHARED_SECRET` 不进入配置文件；首次部署和轮换时使用 `wrangler pages secret put PKI_ORIGIN_SHARED_SECRET --project-name pki-web` 写入。
 
 ## 执行顺序与失败行为
 
 一次 tag 发布按以下顺序执行：
 
-1. 校验 tag 是 `v1.2.3` 风格的 SemVer，且 tagged commit 位于配置的 production branch 历史中。
-2. 运行 Go tests、Go vet、前端 lint、TypeScript、Vitest、Vite build 和 Pages Function build。
-3. 构建 `linux/amd64`、`linux/arm64` 后端并生成校验和。
-4. 创建 GitHub draft release 并上传后端附件。
-5. 从 `web` 目录执行 Wrangler production deployment。
-6. Pages 成功后才把 GitHub Release 从 draft 改为 published。
+1. 运行 Go tests、Go vet、前端 lint、TypeScript、Vitest、Vite build 和 Pages Function build。
+2. 构建 `linux/amd64`、`linux/arm64` 后端并生成校验和。
+3. 从 `web` 目录执行 Wrangler production deployment。
+4. Pages 成功后创建 GitHub Release 并上传后端附件。
 
-如果 Pages 发布失败，Release 会保持 draft。重新运行同一个 workflow 时会复用该 draft，并使用 `--clobber` 替换同名附件；已经发布的 Release 不允许被自动覆盖。
+如果测试、构建或 Pages 发布失败，GitHub Release 不会被创建。已经存在同名 Release 时，workflow 会失败且不会覆盖已有附件。
 
 工作流对同一 tag 使用 `concurrency`，不会取消正在进行的发布，并设置 45 分钟超时。
 

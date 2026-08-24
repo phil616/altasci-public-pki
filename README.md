@@ -3,7 +3,7 @@
 This fork adds the PKI-Console enterprise control plane under
 `cmd/pki-console` and `console/`, plus its React application under `web/`. Start with
 [`doc/pki-console/README.md`](doc/pki-console/README.md) for its architecture,
-security configuration, native Go binary and static web deployment, external
+security configuration, native Go binary and Cloudflare Pages/Functions deployment,
 PostgreSQL configuration, and OpenAPI contract. The original CFSSL tools and
 package documentation continue below.
 
@@ -11,6 +11,14 @@ The step-by-step production runbook is
 [`doc/pki-console/production-deployment.md`](doc/pki-console/production-deployment.md).
 The GitHub tag release and Cloudflare Wrangler workflow is documented in
 [`doc/pki-console/github-actions-release.md`](doc/pki-console/github-actions-release.md).
+Production operations, monitoring, backup/restore, key rotation and incident
+response are documented in
+[`doc/pki-console/operations-runbook.md`](doc/pki-console/operations-runbook.md).
+Reusable operational record forms are in
+[`doc/pki-console/operations-record-templates.md`](doc/pki-console/operations-record-templates.md).
+The live Cloudflare resource inventory is in
+[`doc/pki-console/cloudflare-wrangler-operations.md`](doc/pki-console/cloudflare-wrangler-operations.md),
+and resolved incidents are kept beside these runbooks.
 
 # CFSSL
 

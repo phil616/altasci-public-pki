@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pki-web",
+  "compatibility_date": "2026-08-24",
+  "pages_build_output_dir": "./dist",
+  "vars": {
+    "PKI_ORIGIN_URL": "https://pki-origin.altasci.com",
+    "PKI_PUBLIC_HOST": "pki.altasci.com",
+    "PKI_CONSOLE_HOST": "pki-console.altasci.com"
+  }
+}

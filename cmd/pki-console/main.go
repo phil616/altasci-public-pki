@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -125,6 +126,10 @@ func healthcheck(ctx context.Context, cfg consoleconfig.Config) error {
 		return err
 	}
 	req.Host = cfg.ConsoleHostname
+	if !cfg.DevelopmentInsecure {
+		req.Header.Set("X-PKI-Origin-Secret", hex.EncodeToString(cfg.OriginSharedSecret))
+		req.Header.Set("X-PKI-Forwarded-Host", cfg.ConsoleHostname)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

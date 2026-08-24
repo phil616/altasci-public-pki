@@ -3,8 +3,8 @@
 The web application is a React 19 single-page application shared by the two
 PKI-Console hostnames:
 
-- `pki-console.example.com` selects the authenticated management Console.
-- `pki.example.com` selects the public CA, CRL and exact certificate lookup UI.
+- `pki-console.altasci.com` selects the authenticated management Console.
+- `pki.altasci.com` selects the public CA, CRL and exact certificate lookup UI.
 
 The build uses TypeScript, Vite, React Router, TanStack Query and Ant Design.
 It talks only to same-origin paths, sends the HTTP-only session cookie with

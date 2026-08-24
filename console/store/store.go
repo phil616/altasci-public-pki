@@ -304,6 +304,9 @@ func (s *Store) RevokeCAGrant(ctx context.Context, caID, userID, permission stri
 }
 
 func (s *Store) Audit(ctx context.Context, event AuditEvent) error {
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -331,14 +334,17 @@ func (s *Store) Audit(ctx context.Context, event AuditEvent) error {
 	digest := hasher.Sum(nil)
 	before, _ := json.Marshal(event.BeforeState)
 	after, _ := json.Marshal(event.AfterState)
-	metadata, _ := json.Marshal(event.Metadata)
+	metadata, err := json.Marshal(event.Metadata)
+	if err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO audit_events
         (actor_user_id,actor_role,session_id,action,resource_type,resource_id,outcome,
          request_id,source_ip,user_agent,cf_access_sub,before_state,after_state,metadata,prev_hash,event_hash)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')::inet,$10,$11,$12,$13,$14,$15,$16)`,
 		event.ActorUserID, event.ActorRole, event.SessionID, event.Action, event.ResourceType,
 		event.ResourceID, event.Outcome, event.RequestID, stringValue(event.SourceIP), event.UserAgent,
-		event.AccessSub, nullableJSON(before), nullableJSON(after), nullableJSON(metadata), previous, digest)
+		event.AccessSub, nullableJSON(before), nullableJSON(after), metadata, previous, digest)
 	if err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}

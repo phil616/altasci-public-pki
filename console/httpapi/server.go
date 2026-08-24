@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -78,7 +79,73 @@ func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service,
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.recoverPanic(s.securityHeaders(s.requestLog(http.HandlerFunc(s.dispatch))))
+	application := s.requireOriginGateway(http.HandlerFunc(s.dispatch))
+	return s.recoverPanic(s.securityHeaders(s.requestLog(application)))
+}
+
+// requireOriginGateway replaces the small Nginx trust boundary used by the
+// original deployment design. In production, only a trusted local tunnel may
+// present the Pages Function shared secret and restore one of the two
+// configured application hostnames.
+func (s *Server) requireOriginGateway(next http.Handler) http.Handler {
+	if s.config.DevelopmentInsecure {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := strings.TrimSpace(r.Header.Get("X-PKI-Origin-Secret"))
+		providedSecret, err := hex.DecodeString(provided)
+		if !s.isTrustedProxy(r.RemoteAddr) || err != nil || len(providedSecret) != len(s.config.OriginSharedSecret) ||
+			subtle.ConstantTimeCompare(providedSecret, s.config.OriginSharedSecret) != 1 {
+			problem(w, http.StatusForbidden, "origin_authentication_failed", "Origin gateway authentication failed")
+			return
+		}
+
+		forwardedHost := canonicalHostname(r.Header.Get("X-PKI-Forwarded-Host"))
+		if forwardedHost != strings.ToLower(s.config.PublicHostname) && forwardedHost != strings.ToLower(s.config.ConsoleHostname) {
+			problem(w, http.StatusMisdirectedRequest, "unknown_host", "Forwarded application hostname is not configured")
+			return
+		}
+		clientIP := strings.TrimSpace(r.Header.Get("X-PKI-Client-IP"))
+		if clientIP != "" && net.ParseIP(clientIP) == nil {
+			problem(w, http.StatusBadRequest, "invalid_proxy_metadata", "Forwarded client address is invalid")
+			return
+		}
+		accessEmail := strings.ToLower(strings.TrimSpace(r.Header.Get("X-PKI-Access-Authenticated-User-Email")))
+		if accessEmail != "" && (len(accessEmail) > 254 || !strings.Contains(accessEmail, "@") || strings.ContainsAny(accessEmail, "\r\n")) {
+			problem(w, http.StatusBadRequest, "invalid_proxy_metadata", "Forwarded Access identity is invalid")
+			return
+		}
+		if forwardedHost != strings.ToLower(s.config.ConsoleHostname) {
+			accessEmail = ""
+		}
+
+		for _, name := range []string{
+			"X-PKI-Origin-Secret", "X-PKI-Forwarded-Host", "X-PKI-Client-IP", "X-PKI-Access-Authenticated-User-Email",
+			"Cf-Access-Authenticated-User-Email",
+			"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Cf-Connecting-Ip",
+		} {
+			r.Header.Del(name)
+		}
+		r.Host = forwardedHost
+		r.Header.Set("X-Forwarded-Host", forwardedHost)
+		r.Header.Set("X-Forwarded-Proto", "https")
+		if clientIP != "" {
+			r.Header.Set("Cf-Connecting-Ip", clientIP)
+			r.Header.Set("X-Forwarded-For", clientIP)
+		}
+		if accessEmail != "" {
+			r.Header.Set("Cf-Access-Authenticated-User-Email", accessEmail)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func canonicalHostname(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
+	if raw == "" || strings.ContainsAny(raw, ":/\\") {
+		return ""
+	}
+	return raw
 }
 
 func (s *Server) routes() {
@@ -403,16 +470,7 @@ func (s *Server) clientIP(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	remote := net.ParseIP(host)
-	trusted := false
-	for _, rawNetwork := range s.config.TrustedProxyCIDRs {
-		_, network, parseErr := net.ParseCIDR(rawNetwork)
-		if parseErr == nil && remote != nil && network.Contains(remote) {
-			trusted = true
-			break
-		}
-	}
-	if trusted {
+	if s.isTrustedProxy(r.RemoteAddr) {
 		forwarded := r.Header.Get("Cf-Connecting-Ip")
 		if forwarded == "" {
 			forwarded = strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
@@ -422,6 +480,21 @@ func (s *Server) clientIP(r *http.Request) string {
 		}
 	}
 	return host
+}
+
+func (s *Server) isTrustedProxy(remoteAddress string) bool {
+	host, _, err := net.SplitHostPort(remoteAddress)
+	if err != nil {
+		return false
+	}
+	remote := net.ParseIP(host)
+	for _, rawNetwork := range s.config.TrustedProxyCIDRs {
+		_, network, parseErr := net.ParseCIDR(rawNetwork)
+		if parseErr == nil && remote != nil && network.Contains(remote) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) allowRequest(key string, limit int, window time.Duration) (bool, time.Duration) {

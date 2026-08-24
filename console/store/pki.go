@@ -92,7 +92,7 @@ func (s *Store) ListCAs(ctx context.Context, activeOnly bool) ([]CertificateAuth
 		return nil, err
 	}
 	defer rows.Close()
-	var out []CertificateAuthority
+	out := make([]CertificateAuthority, 0)
 	for rows.Next() {
 		ca, err := scanCA(rows)
 		if err != nil {

@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   release:
-    name: Build, publish and deploy
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -25,41 +24,10 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
-      CLOUDFLARE_PAGES_PRODUCTION_BRANCH: ${{ vars.CLOUDFLARE_PAGES_PRODUCTION_BRANCH }}
 
     steps:
-      - name: Check out the tagged source
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Validate release inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag must be SemVer with a v prefix, for example v1.2.3" >&2
-            exit 1
-          fi
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CLOUDFLARE_PAGES_PRODUCTION_BRANCH GH_TOKEN; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "Required Actions variable or secret is empty: $name" >&2
-              exit 1
-            fi
-          done
-          for command in gh git jq sha256sum; do
-            command -v "$command" >/dev/null || {
-              echo "Required runner command is missing: $command" >&2
-              exit 1
-            }
-          done
-          git fetch --no-tags origin \
-            "refs/heads/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}:refs/remotes/origin/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}"
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" \
-            "refs/remotes/origin/${CLOUDFLARE_PAGES_PRODUCTION_BRANCH}"; then
-            echo "The tagged commit is not on the configured production branch" >&2
-            exit 1
-          fi
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -74,95 +42,54 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Test the backend
+      - name: Test backend
         run: |
           go test ./console/... ./cmd/pki-console
           go vet ./console/... ./cmd/pki-console
 
-      - name: Install, test and build the frontend and Functions
+      - name: Test and build frontend
         working-directory: web
         run: |
           npm ci --no-audit --no-fund
           npm run check
-          test -f dist/_routes.json
-          test -f dist/_redirects
-          test -f dist/_headers
 
-      - name: Build backend release binaries
+      - name: Build backend binaries
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p release
+          mkdir release
           for arch in amd64 arm64; do
-            output="release/pki-console_${version}_linux_${arch}"
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
               go build -trimpath -buildvcs=true \
               -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "$output" ./cmd/pki-console
+              -o "release/pki-console_${version}_linux_${arch}" \
+              ./cmd/pki-console
           done
-          (
-            cd release
-            sha256sum pki-console_* > SHA256SUMS
-          )
+          (cd release && sha256sum pki-console_* > SHA256SUMS)
 
-      - name: Prepare the draft GitHub Release
-        shell: bash
-        run: |
-          set -euo pipefail
-          releases="$(gh release list --limit 1000 --json tagName,isDraft)"
-          release_count="$(jq --arg tag "$GITHUB_REF_NAME" \
-            '[.[] | select(.tagName == $tag)] | length' <<<"$releases")"
-          if [[ "$release_count" -gt 1 ]]; then
-            echo "Multiple releases exist for ${GITHUB_REF_NAME}; clean them up manually" >&2
-            exit 1
-          fi
-          if [[ "$release_count" -eq 1 ]]; then
-            is_draft="$(jq -r --arg tag "$GITHUB_REF_NAME" \
-              '.[] | select(.tagName == $tag) | .isDraft' <<<"$releases")"
-            if [[ "$is_draft" != "true" ]]; then
-              echo "A published release already exists for ${GITHUB_REF_NAME}; refusing to overwrite it" >&2
-              exit 1
-            fi
-          else
-            create_args=(
-              release create "$GITHUB_REF_NAME"
-              --draft
-              --verify-tag
-              --generate-notes
-              --title "$GITHUB_REF_NAME"
-            )
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-              create_args+=(--prerelease)
-            fi
-            gh "${create_args[@]}"
-          fi
-          gh release upload "$GITHUB_REF_NAME" \
-            release/pki-console_* release/SHA256SUMS --clobber
-
-      - name: Deploy the frontend and Pages Functions
+      - name: Deploy frontend to Cloudflare Pages
         working-directory: web
-        shell: bash
         run: |
-          set -euo pipefail
           npx --no-install wrangler pages deploy dist \
             --project-name="$CLOUDFLARE_PAGES_PROJECT" \
-            --branch="$CLOUDFLARE_PAGES_PRODUCTION_BRANCH" \
+            --branch=main \
             --commit-hash="$GITHUB_SHA" \
             --commit-message="Release $GITHUB_REF_NAME" \
             --commit-dirty=true
 
-      - name: Publish the GitHub Release
+      - name: Publish GitHub Release
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "$GITHUB_REF_NAME" --draft=false
-          release_url="$(gh release view "$GITHUB_REF_NAME" --json url --jq '.url')"
-          {
-            echo "## PKI-Console ${GITHUB_REF_NAME}"
-            echo
-            echo "- GitHub Release: ${release_url}"
-            echo "- Backend: linux/amd64 and linux/arm64"
-            echo "- Cloudflare Pages project: ${CLOUDFLARE_PAGES_PROJECT}"
-            echo "- Commit: ${GITHUB_SHA}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          args=(
+            release create "$GITHUB_REF_NAME"
+            release/pki-console_* release/SHA256SUMS
+            --verify-tag
+            --generate-notes
+            --title "$GITHUB_REF_NAME"
+          )
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"

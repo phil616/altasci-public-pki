@@ -31,6 +31,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		IP:                s.clientIP(r), UserAgent: r.UserAgent(),
 	})
 	if err != nil {
+		accessEmail := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
+		s.logger.Warn("login denied", "request_id", requestID(r), "error", err,
+			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail),
+			"access_jwt_present", r.Header.Get("Cf-Access-Jwt-Assertion") != "",
+			"access_email_present", accessEmail != "",
+			"access_email_matches_root", strings.EqualFold(accessEmail, s.config.RootUserEmail))
 		s.auditLogin(r, nil, "denied", "")
 		problem(w, http.StatusUnauthorized, "invalid_credentials", "Login credentials or required second factors are invalid")
 		return

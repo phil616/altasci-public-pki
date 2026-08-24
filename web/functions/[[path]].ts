@@ -1,3 +1,5 @@
+import { accessEmailClaim } from '../src/lib/access-jwt';
+
 interface Env {
   PKI_ORIGIN_URL: string;
   PKI_ORIGIN_SHARED_SECRET: string;
@@ -58,6 +60,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   for (const name of [
     'host',
     'content-length',
+    'cf-access-authenticated-user-email',
     'cf-connecting-ip',
     'forwarded',
     'x-forwarded-for',
@@ -66,6 +69,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
     'x-pki-origin-secret',
     'x-pki-forwarded-host',
     'x-pki-client-ip',
+    'x-pki-access-authenticated-user-email',
   ]) {
     headers.delete(name);
   }
@@ -76,15 +80,27 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   // Public endpoints never need Console session or Access credentials.
   if (hostname === publicHost) {
     headers.delete('authorization');
-    headers.delete('cf-access-authenticated-user-email');
     headers.delete('cf-access-jwt-assertion');
     headers.delete('cookie');
+  } else {
+    const email = accessEmailClaim(headers.get('cf-access-jwt-assertion'));
+    if (!email) return problem(401, 'Cloudflare Access identity is unavailable');
+    // Cloudflare may remove reserved Cf-Access-* headers on the subrequest to
+    // an origin without its own Access application. Carry the untrusted JWT
+    // claim over our authenticated origin channel; Go restores the official
+    // header and still performs the complete JWT verification.
+    headers.set('X-PKI-Access-Authenticated-User-Email', email);
   }
 
   const init: RequestInit = { method: request.method, headers, redirect: 'manual' };
   if (request.method !== 'GET' && request.method !== 'HEAD') init.body = request.body;
 
-  const response = await fetch(upstream.toString(), init);
+  let response: Response;
+  try {
+    response = await fetch(upstream.toString(), init);
+  } catch {
+    return problem(502, 'PKI origin is unavailable');
+  }
   const responseHeaders = new Headers(response.headers);
   if (hostname === consoleHost) responseHeaders.set('Cache-Control', 'private, no-store');
 

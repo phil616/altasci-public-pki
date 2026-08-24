@@ -4,6 +4,7 @@ package config
 import (
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ type Config struct {
 	AccessAudience      string
 	MasterKeyActiveID   string
 	MasterKeys          map[string][]byte
+	OriginSharedSecret  []byte
 	SessionIdle         time.Duration
 	SessionMax          time.Duration
 	RootSessionIdle     time.Duration
@@ -90,6 +92,9 @@ func Load() (Config, error) {
 	if c.MasterKeys, err = parseMasterKeys(os.Getenv("PKI_MASTER_KEYS")); err != nil {
 		return Config{}, err
 	}
+	if c.OriginSharedSecret, err = parseOriginSharedSecret(os.Getenv("PKI_ORIGIN_SHARED_SECRET")); err != nil {
+		return Config{}, err
+	}
 	return c, c.Validate()
 }
 
@@ -117,18 +122,34 @@ func (c Config) Validate() error {
 	if len(c.RootUserPassword) < 32 {
 		return errors.New("ROOT_USER_PASSWORD must contain at least 32 characters")
 	}
-	if _, _, err := net.SplitHostPort(c.ListenAddress); err != nil {
+	listenHost, _, err := net.SplitHostPort(c.ListenAddress)
+	if err != nil {
 		return fmt.Errorf("PKI_LISTEN_ADDRESS must be in host:port form: %w", err)
+	}
+	if !c.DevelopmentInsecure {
+		listenIP := net.ParseIP(listenHost)
+		if listenIP == nil || !listenIP.IsLoopback() {
+			return errors.New("PKI_LISTEN_ADDRESS must bind an explicit loopback address outside development mode")
+		}
 	}
 	databaseURL, err := url.Parse(c.DatabaseURL)
 	if err != nil || (databaseURL.Scheme != "postgres" && databaseURL.Scheme != "postgresql") || databaseURL.Hostname() == "" {
 		return errors.New("DATABASE_URL must be a PostgreSQL URL")
 	}
 	if !c.DevelopmentInsecure && strings.EqualFold(databaseURL.Query().Get("sslmode"), "disable") {
-		return errors.New("DATABASE_URL cannot disable TLS outside development mode")
+		databaseIP := net.ParseIP(databaseURL.Hostname())
+		if databaseIP == nil || !databaseIP.IsLoopback() {
+			return errors.New("DATABASE_URL cannot disable TLS outside development mode unless the host is an explicit loopback IP")
+		}
 	}
 	if len(c.RootUserTOTPSecret) < 20 {
 		return errors.New("ROOT_USER_TOTP_SECRET must contain at least 160 bits")
+	}
+	if !c.DevelopmentInsecure && len(c.OriginSharedSecret) == 0 {
+		return errors.New("PKI_ORIGIN_SHARED_SECRET is required outside development mode")
+	}
+	if len(c.OriginSharedSecret) != 0 && len(c.OriginSharedSecret) != 32 {
+		return errors.New("PKI_ORIGIN_SHARED_SECRET must decode to exactly 32 bytes")
 	}
 	if !strings.Contains(c.RootUserEmail, "@") {
 		return errors.New("ROOT_USER_EMAIL must be a valid email address")
@@ -147,7 +168,25 @@ func (c Config) Validate() error {
 			return fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", network)
 		}
 	}
+	if !c.DevelopmentInsecure && len(c.TrustedProxyCIDRs) == 0 {
+		return errors.New("TRUSTED_PROXY_CIDRS is required outside development mode")
+	}
 	return nil
+}
+
+func parseOriginSharedSecret(raw string) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if len(raw) != 64 {
+		return nil, errors.New("PKI_ORIGIN_SHARED_SECRET must be exactly 64 hexadecimal characters")
+	}
+	secret, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, errors.New("PKI_ORIGIN_SHARED_SECRET must contain only hexadecimal characters")
+	}
+	return secret, nil
 }
 
 func parseMasterKeys(raw string) (map[string][]byte, error) {
