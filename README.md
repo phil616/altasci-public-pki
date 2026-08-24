@@ -16,6 +16,9 @@ response are documented in
 [`doc/pki-console/operations-runbook.md`](doc/pki-console/operations-runbook.md).
 Reusable operational record forms are in
 [`doc/pki-console/operations-record-templates.md`](doc/pki-console/operations-record-templates.md).
+The detailed Web tutorial for establishing the enterprise CA hierarchy and
+signing profiles is
+[`doc/pki-console/enterprise-pki-web-setup.md`](doc/pki-console/enterprise-pki-web-setup.md).
 The live Cloudflare resource inventory is in
 [`doc/pki-console/cloudflare-wrangler-operations.md`](doc/pki-console/cloudflare-wrangler-operations.md),
 and resolved incidents are kept beside these runbooks.

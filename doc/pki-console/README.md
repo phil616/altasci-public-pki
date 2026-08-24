@@ -18,6 +18,9 @@ response, see [operations-runbook.md](operations-runbook.md). The resolved
 [incident-2026-08-24-access-login.md](incident-2026-08-24-access-login.md).
 Reusable change, inspection, restore, rotation and incident forms are in
 [operations-record-templates.md](operations-record-templates.md).
+For the Web workflow that builds one root, two path-length-zero issuing CAs,
+purpose-specific profiles and operator grants, see
+[enterprise-pki-web-setup.md](enterprise-pki-web-setup.md).
 
 ## Native binary deployment
 
