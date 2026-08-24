@@ -60,9 +60,9 @@ export function PublicAboutPage() {
       <Card className="lookup-card public-about-card">
         <Paragraph>AltasCI PKI是基于 Cloudflare CFSSL 源码构建的企业级 PKI 系统，提供证书签发、查询、吊销和公开验证服务。</Paragraph>
         <Paragraph>AltasCI Public PKI作为主要公钥基础设施向AltasCI其他应用和场景提供公钥基础设施服务.</Paragraph>
-        <a className="public-about-link" href="https://example.com" target="_blank" rel="noreferrer">了解更多关于AltasCI PKI <ArrowRightOutlined /></a>
+        <a className="public-about-link" href="https://github.com/phil616/altasci-public-pki" target="_blank" rel="noreferrer">了解更多关于AltasCI PKI <ArrowRightOutlined /></a>
         <br></br>
-        <a className="public-about-link" href="https://example.com" target="_blank" rel="noreferrer">了解更多关于Cloudflare CFSSL <ArrowRightOutlined /></a>
+        <a className="public-about-link" href="https://github.com/cloudflare/cfssl" target="_blank" rel="noreferrer">了解更多关于Cloudflare CFSSL <ArrowRightOutlined /></a>
       </Card>
     </main>
   );
