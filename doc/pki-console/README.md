@@ -23,6 +23,10 @@ purpose-specific profiles and operator grants, see
 [enterprise-pki-web-setup.md](enterprise-pki-web-setup.md).
 For RFC 3161 time-stamping unit provisioning, client commands, clock health,
 and failure behavior, see [tsa.md](tsa.md).
+For native desktop integration through Cloudflare Managed OAuth, system-browser
+Authorization Code + PKCE, local username/password login, session cookies, and
+CSRF handling, see
+[desktop-client-integration.md](desktop-client-integration.md).
 
 ## Native binary deployment
 
@@ -246,4 +250,6 @@ cd web
 npm run test:e2e
 ```
 
-The API contract is [openapi.yaml](openapi.yaml).
+The API contract is [openapi.yaml](openapi.yaml). Desktop and native-client
+authentication requirements are documented in
+[desktop-client-integration.md](desktop-client-integration.md).
