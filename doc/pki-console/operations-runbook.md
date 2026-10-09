@@ -5,7 +5,8 @@
 [production-deployment.md](production-deployment.md)，Cloudflare 资源清单见
 [cloudflare-wrangler-operations.md](cloudflare-wrangler-operations.md)。
 
-最后核验日期：2026-08-24。
+原生产基线核验日期：2026-08-24；2026-10-09 按源码修正 healthcheck 说明。
+部署、迁移和导出命令见 [部署、迁移与数据导出手册](deployment-migration-export.md)。
 
 ## 1. 当前生产基线
 
@@ -121,7 +122,7 @@ curl --silent --show-error -o /dev/null -w '%{http_code} %{redirect_url}\n' \
 
 预期依次是：live JSON 200、authorities JSON 200、origin 403、Console 到 Cloudflare
 Access 的 302。`/health/live` 只证明 Go 进程能响应；需要验证 PostgreSQL 时使用 Console
-侧 `/api/v1/health/ready` 或内置 healthcheck。
+侧 `/api/v1/health/ready`；内置 healthcheck 仅检查存活。
 
 连接服务器：
 
@@ -141,8 +142,8 @@ sudo -u pki-console env -i /bin/sh -c \
   'set -a; . /etc/pki-console/pki-console.env; set +a; exec /usr/local/bin/pki-console healthcheck'
 ```
 
-`pki-console healthcheck` 会带正确的内部 origin 头访问 Console ready 路径，并在 3 秒
-内确认 Go 和 PostgreSQL 均可用。服务 restart 后应短间隔重试最多 15 秒，不能在第一次
+`pki-console healthcheck` 会带正确的内部 origin 头访问 Console live 路径，请求超时为 3 秒，
+仅确认 Go 存活；数据库可用性应另查 `/api/v1/health/ready`。服务 restart 后应短间隔重试最多 15 秒，不能在第一次
 `connection refused` 时直接认定新版本失败。
 
 ## 6. 日志和指标
@@ -181,7 +182,7 @@ Prometheus 指标位于 Console 的 `/api/v1/metrics`，包含 Go/process 指标
 | 告警 | 条件 | 等级 |
 | --- | --- | --- |
 | PublicPKIDown | 公共 live 连续 2 分钟非 200 | P1 |
-| PKIReadyFailed | 内置 healthcheck 连续 2 次失败 | P1 |
+| PKIReadyFailed | `/api/v1/health/ready` 连续 2 次失败 | P1 |
 | TunnelDown | `cloudflared.service` inactive 或 Tunnel 无连接 | P1 |
 | HTTP5xxBurst | 5 分钟内 5xx 比例超过 2% 且至少 5 次 | P1/P2 |
 | IssuanceBacklog | queued/failed 超过 10 条或最老任务超过 5 分钟 | P2 |

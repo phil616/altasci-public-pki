@@ -13,7 +13,7 @@ Cloudflare 账户中的实际资源、Wrangler 操作记录和维护命令见 `c
 | 管理控制台 | `pki-console.altasci.com` | 配置 Cloudflare Access |
 | Pages Function 到生产入口 | `pki-origin.altasci.com` | 仅接受带共享密钥的代理请求 |
 
-PKI-Console 应用不使用 Docker，而是以 Go 二进制和 systemd 运行。Go 进程不保存本地业务数据，证书、加密后的 CA 私钥、用户、会话和审计数据全部保存在独立管理的 PostgreSQL 中。当前生产 PostgreSQL 由同机 1Panel 容器提供；它不属于应用容器或应用发布流程。
+本手册的部署方案以 Go 二进制和 systemd 运行 PKI-Console。可选 Docker 方案、迁移和数据导出步骤见 [部署、迁移与数据导出手册](deployment-migration-export.md)。Go 进程不保存本地业务数据，证书、加密后的 CA 私钥、用户、会话和审计数据全部保存在独立管理的 PostgreSQL 中。当前生产 PostgreSQL 由同机 1Panel 容器提供；它不属于应用容器或应用发布流程。
 
 ## 1. 最终架构
 

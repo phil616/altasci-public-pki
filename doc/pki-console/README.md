@@ -12,6 +12,8 @@ For tag-driven GitHub Releases and Wrangler deployment, see
 For the current Cloudflare resources, completed Wrangler operations and
 maintenance procedure, see
 [cloudflare-wrangler-operations.md](cloudflare-wrangler-operations.md).
+For a Chinese guide to Docker deployment, host/database migration, backup/restore,
+and data exports, see [deployment-migration-export.md](deployment-migration-export.md).
 For daily checks, monitoring, backup/restore, rotation, rollback and incident
 response, see [operations-runbook.md](operations-runbook.md). The resolved
 2026-08-24 Access login incident is documented in
