@@ -3,12 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,14 +117,20 @@ func (s *Server) publicCRL(w http.ResponseWriter, r *http.Request) {
 	der, next, err := s.store.CurrentCRL(r.Context(), ca.ID)
 	if errors.Is(err, store.ErrNotFound) || (!next.IsZero() && next.Before(time.Now().Add(time.Minute))) {
 		der, err = s.pki.GenerateCRL(r.Context(), ca.ID)
-		next = time.Now().Add(7 * 24 * time.Hour)
+		if err == nil {
+			var parsed *x509.RevocationList
+			parsed, err = x509.ParseRevocationList(der)
+			if err == nil {
+				next = parsed.NextUpdate
+			}
+		}
 	}
 	if err != nil {
 		problem(w, http.StatusServiceUnavailable, "crl_unavailable", "Current CRL is unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "application/pkix-crl")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(max(0, min(3600, int(time.Until(next).Seconds())))))
 	w.Header().Set("Expires", next.UTC().Format(http.TimeFormat))
 	_, _ = w.Write(der)
 }
@@ -188,8 +196,13 @@ func (s *Server) publicOCSP(w http.ResponseWriter, r *http.Request) {
 		writeOCSPError(w, ocsp.InternalErrorErrorResponse)
 		return
 	}
+	parsedResponse, err := ocsp.ParseResponse(response, issuer)
+	if err != nil {
+		writeOCSPError(w, ocsp.InternalErrorErrorResponse)
+		return
+	}
 	w.Header().Set("Content-Type", "application/ocsp-response")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(max(0, min(3600, int(time.Until(parsedResponse.NextUpdate).Seconds())))))
 	_, _ = w.Write(response)
 }
 

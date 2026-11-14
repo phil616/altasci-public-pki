@@ -110,8 +110,12 @@ func (s *Service) CreateAuthority(ctx context.Context, actor store.User, input C
 	}
 	notBefore := moment.Time.Add(-backdate)
 	notAfter := moment.Time.Add(validity)
-	if issuer.NotAfter.Before(notAfter) {
-		notAfter = issuer.NotAfter
+	chainExpiry, err := security.ChainNotAfter([]byte(issuerRecord.ChainPEM))
+	if err != nil {
+		return store.TimestampAuthority{}, err
+	}
+	if chainExpiry.Before(notAfter) {
+		notAfter = chainExpiry
 	}
 	if !notAfter.After(moment.Time.Add(minimumValidity)) {
 		return store.TimestampAuthority{}, errors.New("issuer CA expires too soon for a timestamp authority")
@@ -172,6 +176,9 @@ func (s *Service) CreateAuthority(ctx context.Context, actor store.User, input C
 	}
 	if err := certificate.CheckSignatureFrom(issuer); err != nil {
 		return store.TimestampAuthority{}, fmt.Errorf("verify TSU certificate chain: %w", err)
+	}
+	if err := security.VerifyIssuedCertificate(certificate, []byte(issuerRecord.ChainPEM), moment.Time); err != nil {
+		return store.TimestampAuthority{}, err
 	}
 	pkcs8, err := x509.MarshalPKCS8PrivateKey(privateKey)
 	if err != nil {
@@ -244,6 +251,13 @@ func (s *Service) Respond(ctx context.Context, slug string, requestDER []byte) (
 	}
 	certificate, signer, parents, err := s.loadTimestampSigner(authority)
 	if err != nil {
+		return rejectionWithError(dtimestamp.SystemFailure, err)
+	}
+	var parentPEM []byte
+	for _, parent := range parents {
+		parentPEM = append(parentPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: parent.Raw})...)
+	}
+	if err := security.VerifyIssuedCertificate(certificate, parentPEM, moment.Time); err != nil {
 		return rejectionWithError(dtimestamp.SystemFailure, err)
 	}
 

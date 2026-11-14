@@ -26,25 +26,23 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.auth.Login(r.Context(), auth.LoginInput{
 		Login: input.Login, Password: input.Password, TOTP: input.TOTP,
-		AccessJWT:         r.Header.Get("Cf-Access-Jwt-Assertion"),
-		AccessEmailHeader: r.Header.Get("Cf-Access-Authenticated-User-Email"),
-		IP:                s.clientIP(r), UserAgent: r.UserAgent(),
+		IP: s.clientIP(r), UserAgent: r.UserAgent(),
 	})
 	if err != nil {
-		accessEmail := strings.TrimSpace(r.Header.Get("Cf-Access-Authenticated-User-Email"))
 		s.logger.Warn("login denied", "request_id", requestID(r), "error", err,
-			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail),
-			"access_jwt_present", r.Header.Get("Cf-Access-Jwt-Assertion") != "",
-			"access_email_present", accessEmail != "",
-			"access_email_matches_root", strings.EqualFold(accessEmail, s.config.RootUserEmail))
-		s.auditLogin(r, nil, "denied", "")
+			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail))
+		_ = s.auditLogin(r, nil, "denied")
 		problem(w, http.StatusUnauthorized, "invalid_credentials", "Login credentials or required second factors are invalid")
+		return
+	}
+	if err := s.auditLogin(r, &result.User, "success"); err != nil {
+		_ = s.auth.Logout(r.Context(), result.SessionID)
+		problem(w, http.StatusServiceUnavailable, "audit_unavailable", "Audit storage is unavailable")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: result.Token, Path: "/",
 		Secure: !s.config.DevelopmentInsecure, HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		Expires: result.ExpiresAt, MaxAge: int(time.Until(result.ExpiresAt).Seconds())})
-	s.auditLogin(r, &result.User, "success", result.AccessSub)
 	writeJSON(w, http.StatusOK, map[string]any{"user": result.User, "csrf_token": result.CSRFToken,
 		"expires_at": result.ExpiresAt})
 }
@@ -58,24 +56,23 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(), Value: "", Path: "/",
 		Secure: !s.config.DevelopmentInsecure, HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		MaxAge: -1, Expires: time.Unix(1, 0)})
-	s.audit(r, "auth.logout", "session", &p.SessionID, "success", nil)
+	_ = s.audit(r, "auth.logout", "session", &p.SessionID, "success", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) auditLogin(r *http.Request, user *store.User, outcome, accessSubject string) {
-	var actorID, role, accessSub *string
+func (s *Server) auditLogin(r *http.Request, user *store.User, outcome string) error {
+	var actorID, role *string
 	if user != nil {
 		actorID, role = &user.ID, &user.Role
-	}
-	if accessSubject != "" {
-		accessSub = &accessSubject
 	}
 	ip := s.clientIP(r)
 	if err := s.store.Audit(r.Context(), store.AuditEvent{ActorUserID: actorID, ActorRole: role,
 		Action: "auth.login", ResourceType: "session", Outcome: outcome, RequestID: requestID(r),
-		SourceIP: &ip, UserAgent: r.UserAgent(), AccessSub: accessSub}); err != nil {
+		SourceIP: &ip, UserAgent: r.UserAgent()}); err != nil {
 		s.logger.Error("write login audit event", "request_id", requestID(r), "error", err)
+		return err
 	}
+	return nil
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +130,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "user_conflict", "Username or email already exists, or role is invalid")
 		return
 	}
-	s.audit(r, "user.create", "user", &user.ID, "success", map[string]any{"role": user.Role})
+	_ = s.audit(r, "user.create", "user", &user.ID, "success", map[string]any{"role": user.Role})
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -157,7 +154,7 @@ func (s *Server) setUserStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, status, "user_update_failed", "Unable to update user status")
 		return
 	}
-	s.audit(r, "user.status.update", "user", &id, "success", map[string]string{"status": input.Status})
+	_ = s.audit(r, "user.status.update", "user", &id, "success", map[string]string{"status": input.Status})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -186,7 +183,7 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "user_not_found", "User was not found or is the protected root account")
 		return
 	}
-	s.audit(r, "user.password.reset", "user", &id, "success", nil)
+	_ = s.audit(r, "user.password.reset", "user", &id, "success", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -221,7 +218,7 @@ func (s *Server) createGrant(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "grant_failed", "Grant is invalid; root CA permissions cannot be delegated")
 		return
 	}
-	s.audit(r, "ca.grant.create", "certificate_authority", &caID, "success", input)
+	_ = s.audit(r, "ca.grant.create", "certificate_authority", &caID, "success", input)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -235,17 +232,19 @@ func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "grant_not_found", "CA grant was not found")
 		return
 	}
-	s.audit(r, "ca.grant.delete", "certificate_authority", &caID, "success",
+	_ = s.audit(r, "ca.grant.delete", "certificate_authority", &caID, "success",
 		map[string]string{"user_id": r.PathValue("userID"), "permission": r.PathValue("permission")})
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// verifyRootStepUp enforces fresh local credentials in addition to the Access
-// assertion already verified by the authentication middleware.
+// verifyRootStepUp requires a fresh password and non-replayed TOTP code.
 func (s *Server) verifyRootStepUp(r *http.Request, password, code string) error {
 	p := principal(r)
 	if p.User.Role != "super_admin" {
 		return errors.New("super administrator is required")
+	}
+	if allowed, _ := s.allowRequest("step-up:"+p.User.ID, 5, time.Minute); !allowed {
+		return errors.New("too many step-up attempts; retry later")
 	}
 	fresh, err := s.store.UserByID(r.Context(), p.User.ID)
 	if err != nil {
@@ -259,5 +258,5 @@ func (s *Server) verifyRootStepUp(r *http.Request, password, code string) error 
 	if err != nil {
 		return err
 	}
-	return s.store.AcceptRootStepUp(r.Context(), fresh.ID, step)
+	return s.store.AcceptRootStepUp(r.Context(), fresh.ID, fresh.PasswordHash, step)
 }

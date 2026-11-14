@@ -7,6 +7,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -15,17 +16,16 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/url"
 	"path"
 	"strings"
 	"time"
 
-	"github.com/cloudflare/cfssl/certdb"
 	cfconfig "github.com/cloudflare/cfssl/config"
 	"github.com/cloudflare/cfssl/console/security"
 	"github.com/cloudflare/cfssl/console/store"
-	cfcrl "github.com/cloudflare/cfssl/crl"
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/helpers"
 	"github.com/cloudflare/cfssl/initca"
@@ -133,6 +133,9 @@ func (s *Service) CreateIntermediate(ctx context.Context, actor store.User, inpu
 	if parent.Kind != "root" || parent.Status != "active" {
 		return store.CertificateAuthority{}, errors.New("intermediate parent must be an active root CA")
 	}
+	if parent.PathLength == 0 {
+		return store.CertificateAuthority{}, errors.New("parent CA does not permit intermediate CAs")
+	}
 	parentCert, parentKey, err := s.loadSigner(ctx, parent)
 	if err != nil {
 		return store.CertificateAuthority{}, err
@@ -163,10 +166,21 @@ func (s *Service) CreateIntermediate(ctx context.Context, actor store.User, inpu
 	if err != nil {
 		return store.CertificateAuthority{}, fmt.Errorf("CFSSL initialize parent signer: %w", err)
 	}
-	notAfter := minTime(s.now().Add(intermediateValidity), parent.NotAfter)
+	chainExpiry, err := security.ChainNotAfter([]byte(parent.ChainPEM))
+	if err != nil {
+		return store.CertificateAuthority{}, err
+	}
+	notAfter := minTime(s.now().Add(intermediateValidity), chainExpiry)
 	certPEM, err := cfSigner.Sign(signer.SignRequest{Request: string(csrPEM), NotBefore: s.now().Add(-certificateBackdate), NotAfter: notAfter})
 	if err != nil {
 		return store.CertificateAuthority{}, fmt.Errorf("CFSSL sign intermediate CA: %w", err)
+	}
+	parsed, err := helpers.ParseCertificatePEM(certPEM)
+	if err != nil {
+		return store.CertificateAuthority{}, err
+	}
+	if err := security.VerifyIssuedCertificate(parsed, []byte(parent.ChainPEM), s.now()); err != nil {
+		return store.CertificateAuthority{}, err
 	}
 	caID, keyID, profileID, err := s.newIDs(ctx)
 	if err != nil {
@@ -226,7 +240,7 @@ func (s *Service) persistCA(ctx context.Context, actor store.User, input CreateC
 		profile.KeyUsages = []string{"cert sign", "crl sign"}
 		profile.ExtendedKeyUsages = []string{}
 	}
-	responder, err := s.createOCSPResponder(ctx, caID, certificate, privateKey, input.Subject.CommonName)
+	responder, err := s.createOCSPResponder(ctx, caID, certificate, privateKey, input.Subject.CommonName, chainPEM)
 	if err != nil {
 		return store.CertificateAuthority{}, err
 	}
@@ -236,7 +250,7 @@ func (s *Service) persistCA(ctx context.Context, actor store.User, input CreateC
 	return s.store.CAByID(ctx, caID)
 }
 
-func (s *Service) createOCSPResponder(ctx context.Context, caID string, issuer *x509.Certificate, issuerKey crypto.Signer, commonName string) (store.OCSPResponder, error) {
+func (s *Service) createOCSPResponder(ctx context.Context, caID string, issuer *x509.Certificate, issuerKey crypto.Signer, commonName string, issuerChain []byte) (store.OCSPResponder, error) {
 	responderID, err := s.store.NewID(ctx)
 	if err != nil {
 		return store.OCSPResponder{}, err
@@ -257,13 +271,20 @@ func (s *Service) createOCSPResponder(ctx context.Context, caID string, issuer *
 		return store.OCSPResponder{}, fmt.Errorf("initialize OCSP certificate signer: %w", err)
 	}
 	notBefore := s.now().Add(-certificateBackdate)
-	notAfter := minTime(s.now().Add(profile.Expiry), issuer.NotAfter)
+	chainExpiry, err := security.ChainNotAfter(issuerChain)
+	if err != nil {
+		return store.OCSPResponder{}, err
+	}
+	notAfter := minTime(s.now().Add(profile.Expiry), chainExpiry)
 	certPEM, err := cfSigner.Sign(signer.SignRequest{Request: string(csrPEM), NotBefore: notBefore, NotAfter: notAfter})
 	if err != nil {
 		return store.OCSPResponder{}, fmt.Errorf("sign OCSP responder certificate: %w", err)
 	}
 	responderCert, err := helpers.ParseCertificatePEM(certPEM)
 	if err != nil {
+		return store.OCSPResponder{}, err
+	}
+	if err := security.VerifyIssuedCertificate(responderCert, issuerChain, s.now()); err != nil {
 		return store.OCSPResponder{}, err
 	}
 	responderKey, err := helpers.ParsePrivateKeyPEM(keyPEM)
@@ -298,7 +319,7 @@ func (s *Service) CreateRequest(ctx context.Context, actor store.User, input Cre
 	if err != nil {
 		return store.CertificateRequest{}, err
 	}
-	if input.RequestedValiditySeconds != nil && (time.Duration(*input.RequestedValiditySeconds)*time.Second > profile.MaxValidity || *input.RequestedValiditySeconds <= 0) {
+	if input.RequestedValiditySeconds != nil && (*input.RequestedValiditySeconds > int64(profile.MaxValidity/time.Second) || *input.RequestedValiditySeconds <= 0) {
 		return store.CertificateRequest{}, errors.New("requested validity exceeds signing profile")
 	}
 	mode := "client_csr"
@@ -335,29 +356,43 @@ func (s *Service) CreateRequest(ctx context.Context, actor store.User, input Cre
 }
 
 func (s *Service) ProcessOne(ctx context.Context, workerID string) (IssueResult, error) {
-	jobID, requestID, err := s.store.ClaimIssuanceJob(ctx, workerID)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	claimToken, _, err := security.NewToken()
 	if err != nil {
 		return IssueResult{}, err
 	}
-	result, err := s.issue(ctx, jobID, requestID)
+	owner := workerID + ":" + claimToken
+	jobID, requestID, err := s.store.ClaimIssuanceJob(ctx, owner)
 	if err != nil {
-		_ = s.store.FailIssuance(ctx, jobID, requestID, "issuance_failed", false)
+		return IssueResult{}, err
+	}
+	result, err := s.issue(ctx, jobID, requestID, owner)
+	if err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cleanupCancel()
+		retry := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		_ = s.store.FailIssuance(cleanupCtx, jobID, requestID, owner, "issuance_failed", retry)
 		return IssueResult{}, err
 	}
 	return result, nil
 }
 
-func (s *Service) issue(ctx context.Context, jobID, requestID string) (IssueResult, error) {
+func (s *Service) issue(ctx context.Context, jobID, requestID, owner string) (IssueResult, error) {
 	req, err := s.store.RequestByID(ctx, requestID)
 	if err != nil {
 		return IssueResult{}, err
+	}
+	requester, err := s.store.UserByID(ctx, req.RequesterID)
+	if err != nil || requester.Status != "active" {
+		return IssueResult{}, errors.New("requester is unavailable")
 	}
 	ca, err := s.store.CAByID(ctx, req.CAID)
 	if err != nil || ca.Status != "active" || ca.Kind != "intermediate" {
 		return IssueResult{}, errors.New("issuing CA is unavailable")
 	}
 	profile, err := s.store.ProfileByID(ctx, req.ProfileID)
-	if err != nil || !profile.Enabled {
+	if err != nil || !profile.Enabled || profile.CAID != ca.ID {
 		return IssueResult{}, errors.New("signing profile is unavailable")
 	}
 	caCert, caKey, err := s.loadSigner(ctx, ca)
@@ -388,10 +423,17 @@ func (s *Service) issue(ctx context.Context, jobID, requestID string) (IssueResu
 
 	validity := profile.DefaultValidity
 	if req.RequestedValiditySecs != nil {
+		if *req.RequestedValiditySecs <= 0 || *req.RequestedValiditySecs > int64(profile.MaxValidity/time.Second) {
+			return IssueResult{}, errors.New("requested validity exceeds current signing profile")
+		}
 		validity = time.Duration(*req.RequestedValiditySecs) * time.Second
 	}
 	now := s.now()
-	notAfter := minTime(now.Add(validity), ca.NotAfter)
+	chainExpiry, err := security.ChainNotAfter([]byte(ca.ChainPEM))
+	if err != nil {
+		return IssueResult{}, err
+	}
+	notAfter := minTime(now.Add(validity), chainExpiry)
 	cfProfile := cfconfig.DefaultConfig()
 	cfProfile.Usage = append(append([]string{}, profile.KeyUsages...), profile.ExtendedKeyUsages...)
 	cfProfile.Expiry = validity
@@ -415,6 +457,9 @@ func (s *Service) issue(ctx context.Context, jobID, requestID string) (IssueResu
 	}
 	parsedCert, err := helpers.ParseCertificatePEM(certPEM)
 	if err != nil {
+		return IssueResult{}, err
+	}
+	if err := security.VerifyIssuedCertificate(parsedCert, []byte(ca.ChainPEM), now); err != nil {
 		return IssueResult{}, err
 	}
 	certID, err := s.store.NewID(ctx)
@@ -442,7 +487,7 @@ func (s *Service) issue(ctx context.Context, jobID, requestID string) (IssueResu
 		artifact = &store.KeyArtifact{EncryptedPKCS8: envelope.Ciphertext, Nonce: envelope.Nonce,
 			KEKID: envelope.KeyID, DownloadTokenHash: tokenHash, ExpiresAt: now.Add(24 * time.Hour)}
 	}
-	if err := s.store.CompleteIssuance(ctx, jobID, certificate, artifact); err != nil {
+	if err := s.store.CompleteIssuance(ctx, jobID, owner, certificate, artifact); err != nil {
 		return IssueResult{}, err
 	}
 	return IssueResult{Certificate: certificate}, nil
@@ -465,12 +510,17 @@ func (s *Service) ExportCAKey(ctx context.Context, caID string) ([]byte, error) 
 }
 
 func (s *Service) DownloadLeafKey(ctx context.Context, certificateID, ownerUserID string) ([]byte, error) {
-	artifact, err := s.store.ConsumeLeafKeyArtifact(ctx, certificateID, ownerUserID, s.now())
-	if err != nil {
-		return nil, err
-	}
-	plain, err := s.keys.Decrypt(security.Envelope{KeyID: artifact.KEKID, Nonce: artifact.Nonce,
-		Ciphertext: artifact.EncryptedPKCS8}, leafKeyAAD(certificateID))
+	var plain []byte
+	_, err := s.store.ConsumeLeafKeyArtifact(ctx, certificateID, ownerUserID, s.now(), func(artifact store.KeyArtifact) error {
+		var err error
+		plain, err = s.keys.Decrypt(security.Envelope{KeyID: artifact.KEKID, Nonce: artifact.Nonce,
+			Ciphertext: artifact.EncryptedPKCS8}, leafKeyAAD(certificateID))
+		if err != nil {
+			return err
+		}
+		_, err = x509.ParsePKCS8PrivateKey(plain)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -486,24 +536,28 @@ func (s *Service) GenerateCRL(ctx context.Context, caID string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	revoked, err := s.store.RevokedCertificates(ctx, caID)
+	expires, err := security.ChainNotAfter([]byte(ca.ChainPEM))
 	if err != nil {
 		return nil, err
 	}
-	records := make([]certdb.CertificateRecord, 0, len(revoked))
-	for _, item := range revoked {
-		records = append(records, certdb.CertificateRecord{Serial: item.Serial, RevokedAt: item.RevokedAt, Reason: item.Reason})
-	}
-	der, err := cfcrl.NewCRLFromDB(records, issuer, key, 7*24*time.Hour)
-	if err != nil {
-		return nil, fmt.Errorf("CFSSL generate CRL: %w", err)
-	}
-	digest := sha256.Sum256(der)
-	now := s.now()
-	if err := s.store.SaveCRL(ctx, caID, der, digest[:], now, now.Add(7*24*time.Hour)); err != nil {
-		return nil, err
-	}
-	return der, nil
+	return s.store.RefreshCRL(ctx, caID, func(revoked []store.RevokedCertificate, number int64) ([]byte, time.Time, time.Time, error) {
+		now := s.now().UTC().Truncate(time.Second)
+		next := minTime(now.Add(7*24*time.Hour), expires)
+		if !next.After(now) {
+			return nil, time.Time{}, time.Time{}, errors.New("CRL issuer has expired")
+		}
+		entries := make([]x509.RevocationListEntry, 0, len(revoked))
+		for _, item := range revoked {
+			serial, ok := new(big.Int).SetString(item.Serial, 10)
+			if !ok {
+				return nil, time.Time{}, time.Time{}, errors.New("invalid revoked serial")
+			}
+			entries = append(entries, x509.RevocationListEntry{SerialNumber: serial, RevocationTime: item.RevokedAt, ReasonCode: item.Reason})
+		}
+		der, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(number),
+			ThisUpdate: now, NextUpdate: next, RevokedCertificateEntries: entries}, issuer, key)
+		return der, now, next, err
+	})
 }
 
 func (s *Service) Revoke(ctx context.Context, actor store.User, certificateID string, reason int, comment string) (store.Certificate, error) {
@@ -535,6 +589,18 @@ func (s *Service) OCSPResponse(ctx context.Context, ca store.CertificateAuthorit
 	responder, err := helpers.ParseCertificatePEM([]byte(responderRecord.CertificatePEM))
 	if err != nil {
 		return nil, err
+	}
+	now := s.now().UTC().Truncate(time.Second)
+	if err := security.VerifyIssuedCertificate(responder, []byte(ca.ChainPEM), now); err != nil {
+		return nil, err
+	}
+	chainExpiry, err := security.ChainNotAfter([]byte(ca.ChainPEM))
+	if err != nil {
+		return nil, err
+	}
+	nextUpdate := minTime(now.Add(4*time.Hour), minTime(responder.NotAfter, chainExpiry))
+	if !nextUpdate.After(now) {
+		return nil, errors.New("OCSP signer has expired")
 	}
 	plain, err := s.keys.Decrypt(security.Envelope{KeyID: responderRecord.KEKID, Nonce: responderRecord.Nonce,
 		Ciphertext: responderRecord.EncryptedPKCS8}, ocspKeyAAD(ca.ID, responderRecord.ID))
@@ -571,7 +637,7 @@ func (s *Service) OCSPResponse(ctx context.Context, ca store.CertificateAuthorit
 		return nil, err
 	}
 	responseDER, err := cfSigner.Sign(cfocsp.SignRequest{Certificate: parsed, Status: status, Reason: reason,
-		RevokedAt: revokedAt, IssuerHash: issuerHash})
+		RevokedAt: revokedAt, IssuerHash: issuerHash, ThisUpdate: &now, NextUpdate: &nextUpdate})
 	if err != nil {
 		return nil, err
 	}
@@ -640,13 +706,13 @@ func parseAndValidateCSR(value string) (*x509.CertificateRequest, error) {
 		return nil, errors.New("csr_pem must contain exactly one PEM certificate request")
 	}
 	request, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil || request.CheckSignature() != nil {
+	if err != nil {
 		return nil, errors.New("CSR signature is invalid")
 	}
 	switch key := request.PublicKey.(type) {
 	case *rsa.PublicKey:
-		if key.N.BitLen() < 2048 {
-			return nil, errors.New("CSR RSA key must contain at least 2048 bits")
+		if key.N.BitLen() < 2048 || key.N.BitLen() > 8192 {
+			return nil, errors.New("CSR RSA key must contain 2048 to 8192 bits")
 		}
 	case *ecdsa.PublicKey:
 		if key.Curve != elliptic.P256() && key.Curve != elliptic.P384() {
@@ -654,6 +720,9 @@ func parseAndValidateCSR(value string) (*x509.CertificateRequest, error) {
 		}
 	default:
 		return nil, errors.New("CSR key algorithm is not permitted")
+	}
+	if err := request.CheckSignature(); err != nil {
+		return nil, errors.New("CSR signature is invalid")
 	}
 	return request, nil
 }
@@ -722,16 +791,11 @@ func validateSANPolicy(hosts []string, profile store.SigningProfile) error {
 }
 
 func validateCAInput(input CreateCAInput, root bool) error {
-	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Subject.CommonName) == "" {
-		return errors.New("CA name and subject common_name are required")
+	if err := validateCAIdentity(input.Name, input.Slug); err != nil {
+		return err
 	}
-	if len(input.Slug) < 2 || len(input.Slug) > 63 {
-		return errors.New("CA slug must contain 2 to 63 characters")
-	}
-	for _, r := range input.Slug {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-			return errors.New("CA slug must contain lowercase letters, digits, or hyphens")
-		}
+	if strings.TrimSpace(input.Subject.CommonName) == "" {
+		return errors.New("CA subject common_name is required")
 	}
 	if root && input.ParentCAID != "" {
 		return errors.New("root CA must not have a parent")
@@ -741,6 +805,21 @@ func validateCAInput(input CreateCAInput, root bool) error {
 	}
 	if input.PathLength < 0 || input.PathLength > 5 {
 		return errors.New("path_length must be between 0 and 5")
+	}
+	return nil
+}
+
+func validateCAIdentity(name, slug string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("CA name is required")
+	}
+	if len(slug) < 2 || len(slug) > 63 || slug[0] == '-' {
+		return errors.New("CA slug must contain 2 to 63 characters and start with a letter or digit")
+	}
+	for _, r := range slug {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return errors.New("CA slug must contain lowercase letters, digits, or hyphens")
+		}
 	}
 	return nil
 }

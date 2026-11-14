@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,19 +31,23 @@ import (
 )
 
 type Server struct {
-	config         consoleconfig.Config
-	store          *store.Store
-	auth           *auth.Service
-	pki            *pki.Service
-	tsa            *tsa.Service
-	logger         *slog.Logger
-	console        *http.ServeMux
-	public         *http.ServeMux
-	rateMu         sync.Mutex
-	rates          map[string]rateWindow
-	metricsHandler http.Handler
-	requestCount   *prometheus.CounterVec
-	requestLatency *prometheus.HistogramVec
+	config          consoleconfig.Config
+	store           *store.Store
+	auth            *auth.Service
+	pki             *pki.Service
+	tsa             *tsa.Service
+	logger          *slog.Logger
+	console         *http.ServeMux
+	public          *http.ServeMux
+	consoleFrontend http.Handler
+	publicFrontend  http.Handler
+	rateMu          sync.Mutex
+	rates           map[string]rateWindow
+	rateSweep       time.Time
+	cryptoSlots     chan struct{}
+	metricsHandler  http.Handler
+	requestCount    *prometheus.CounterVec
+	requestLatency  *prometheus.HistogramVec
 }
 
 type rateWindow struct {
@@ -67,7 +70,7 @@ func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service,
 		logger = slog.Default()
 	}
 	s := &Server{config: cfg, store: data, auth: authService, pki: pkiService, tsa: tsaService,
-		logger: logger, console: http.NewServeMux(), public: http.NewServeMux(), rates: make(map[string]rateWindow)}
+		logger: logger, console: http.NewServeMux(), public: http.NewServeMux(), rates: make(map[string]rateWindow), cryptoSlots: make(chan struct{}, 4)}
 	registry := prometheus.NewRegistry()
 	s.requestCount = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pki_console_http_requests_total",
 		Help: "PKI-Console HTTP requests by method, route, and status."}, []string{"method", "route", "status"})
@@ -81,77 +84,12 @@ func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service,
 }
 
 func (s *Server) Handler() http.Handler {
-	application := s.requireOriginGateway(http.HandlerFunc(s.dispatch))
+	application := http.HandlerFunc(s.dispatch)
 	return s.recoverPanic(s.securityHeaders(s.requestLog(application)))
 }
 
-// requireOriginGateway replaces the small Nginx trust boundary used by the
-// original deployment design. In production, only a trusted local tunnel may
-// present the Pages Function shared secret and restore one of the two
-// configured application hostnames.
-func (s *Server) requireOriginGateway(next http.Handler) http.Handler {
-	if s.config.DevelopmentInsecure {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := strings.TrimSpace(r.Header.Get("X-PKI-Origin-Secret"))
-		providedSecret, err := hex.DecodeString(provided)
-		if !s.isTrustedProxy(r.RemoteAddr) || err != nil || len(providedSecret) != len(s.config.OriginSharedSecret) ||
-			subtle.ConstantTimeCompare(providedSecret, s.config.OriginSharedSecret) != 1 {
-			problem(w, http.StatusForbidden, "origin_authentication_failed", "Origin gateway authentication failed")
-			return
-		}
-
-		forwardedHost := canonicalHostname(r.Header.Get("X-PKI-Forwarded-Host"))
-		if forwardedHost != strings.ToLower(s.config.PublicHostname) && forwardedHost != strings.ToLower(s.config.ConsoleHostname) {
-			problem(w, http.StatusMisdirectedRequest, "unknown_host", "Forwarded application hostname is not configured")
-			return
-		}
-		clientIP := strings.TrimSpace(r.Header.Get("X-PKI-Client-IP"))
-		if clientIP != "" && net.ParseIP(clientIP) == nil {
-			problem(w, http.StatusBadRequest, "invalid_proxy_metadata", "Forwarded client address is invalid")
-			return
-		}
-		accessEmail := strings.ToLower(strings.TrimSpace(r.Header.Get("X-PKI-Access-Authenticated-User-Email")))
-		if accessEmail != "" && (len(accessEmail) > 254 || !strings.Contains(accessEmail, "@") || strings.ContainsAny(accessEmail, "\r\n")) {
-			problem(w, http.StatusBadRequest, "invalid_proxy_metadata", "Forwarded Access identity is invalid")
-			return
-		}
-		if forwardedHost != strings.ToLower(s.config.ConsoleHostname) {
-			accessEmail = ""
-		}
-
-		for _, name := range []string{
-			"X-PKI-Origin-Secret", "X-PKI-Forwarded-Host", "X-PKI-Client-IP", "X-PKI-Access-Authenticated-User-Email",
-			"Cf-Access-Authenticated-User-Email",
-			"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Cf-Connecting-Ip",
-		} {
-			r.Header.Del(name)
-		}
-		r.Host = forwardedHost
-		r.Header.Set("X-Forwarded-Host", forwardedHost)
-		r.Header.Set("X-Forwarded-Proto", "https")
-		if clientIP != "" {
-			r.Header.Set("Cf-Connecting-Ip", clientIP)
-			r.Header.Set("X-Forwarded-For", clientIP)
-		}
-		if accessEmail != "" {
-			r.Header.Set("Cf-Access-Authenticated-User-Email", accessEmail)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func canonicalHostname(raw string) string {
-	raw = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
-	if raw == "" || strings.ContainsAny(raw, ":/\\") {
-		return ""
-	}
-	return raw
-}
-
 func (s *Server) routes() {
-	s.console.HandleFunc("POST /api/v1/auth/login", s.login)
+	s.console.Handle("POST /api/v1/auth/login", s.limitExpensive(http.HandlerFunc(s.login)))
 	s.console.Handle("POST /api/v1/auth/logout", s.requireAuth(http.HandlerFunc(s.logout)))
 	s.console.Handle("GET /api/v1/auth/session", s.requireAuth(http.HandlerFunc(s.session)))
 	s.console.Handle("GET /api/v1/users", s.requireAuth(http.HandlerFunc(s.listUsers)))
@@ -164,6 +102,7 @@ func (s *Server) routes() {
 	s.console.Handle("GET /api/v1/cas", s.requireAuth(http.HandlerFunc(s.listCAs)))
 	s.console.Handle("POST /api/v1/cas/roots", s.requireAuth(s.idempotent(http.HandlerFunc(s.createRoot))))
 	s.console.Handle("POST /api/v1/cas/intermediates", s.requireAuth(s.idempotent(http.HandlerFunc(s.createIntermediate))))
+	s.console.Handle("POST /api/v1/cas/import", s.requireAuth(s.idempotent(http.HandlerFunc(s.importCA))))
 	s.console.Handle("GET /api/v1/cas/{id}", s.requireAuth(http.HandlerFunc(s.getCA)))
 	s.console.Handle("POST /api/v1/cas/{id}/keys/export", s.requireAuth(http.HandlerFunc(s.exportCAKey)))
 	s.console.Handle("GET /api/v1/cas/{id}/profiles", s.requireAuth(http.HandlerFunc(s.listProfiles)))
@@ -197,10 +136,10 @@ func (s *Server) routes() {
 	s.public.HandleFunc("GET /pki/v1/certificates/by-issuer/{issuer}/serial/{serial}", s.publicCertificateBySerial)
 	s.public.HandleFunc("GET /pki/v1/status/{issuer}/{serial}", s.publicCertificateStatus)
 	s.public.HandleFunc("GET /issuers/{file}", s.publicIssuer)
-	s.public.HandleFunc("GET /crl/{file}", s.publicCRL)
-	s.public.HandleFunc("POST /ocsp/{slug}", s.publicOCSP)
-	s.public.HandleFunc("GET /ocsp/{slug}/{request...}", s.publicOCSP)
-	s.public.HandleFunc("POST /tsa/{slug}", s.publicTimestamp)
+	s.public.Handle("GET /crl/{file}", s.limitExpensive(http.HandlerFunc(s.publicCRL)))
+	s.public.Handle("POST /ocsp/{slug}", s.limitExpensive(http.HandlerFunc(s.publicOCSP)))
+	s.public.Handle("GET /ocsp/{slug}/{request...}", s.limitExpensive(http.HandlerFunc(s.publicOCSP)))
+	s.public.Handle("POST /tsa/{slug}", s.limitExpensive(http.HandlerFunc(s.publicTimestamp)))
 	s.public.HandleFunc("GET /health/live", s.live)
 }
 
@@ -223,17 +162,17 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,X-CSRF-Token,Idempotency-Key")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		s.console.ServeHTTP(w, r)
+		serveSurface(w, r, s.console, s.consoleFrontend)
 	case strings.ToLower(s.config.PublicHostname):
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
-		s.public.ServeHTTP(w, r)
+		serveSurface(w, r, s.public, s.publicFrontend)
 	default:
 		problem(w, http.StatusMisdirectedRequest, "unknown_host", "Request hostname is not configured")
 	}
@@ -247,12 +186,27 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			return
 		}
 		principal, err := s.auth.Authenticate(r.Context(), cookie.Value, r.Header.Get("X-CSRF-Token"),
-			r.Method, r.Header.Get("Cf-Access-Jwt-Assertion"), r.Header.Get("Cf-Access-Authenticated-User-Email"))
+			r.Method)
 		if err != nil {
-			problem(w, http.StatusUnauthorized, "authentication_failed", "Session, CSRF, or Cloudflare Access verification failed")
+			problem(w, http.StatusUnauthorized, "authentication_failed", "Session or CSRF verification failed")
 			return
 		}
 		ctx := context.WithValue(r.Context(), principalKey, principal)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			mutation := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := s.audit(r, "http.mutation.authenticated", "http_request", nil, "success", map[string]string{"method": r.Method, "path": r.URL.Path}); err != nil {
+					problem(w, http.StatusServiceUnavailable, "audit_unavailable", "Audit storage is unavailable")
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+			if r.URL.Path == "/api/v1/auth/logout" {
+				mutation.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			s.limitExpensive(mutation).ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -369,18 +323,22 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 			id = hex.EncodeToString(raw[:])
 		}
 		w.Header().Set("X-Request-ID", id)
-		ctx := context.WithValue(r.Context(), requestIDKey, id)
+		deadlineCtx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		ctx := context.WithValue(deadlineCtx, requestIDKey, id)
 		recorder := &statusResponseWriter{ResponseWriter: w}
-		next.ServeHTTP(recorder, r.WithContext(ctx))
+		loggedRequest := r.WithContext(ctx)
+		next.ServeHTTP(recorder, loggedRequest)
 		if recorder.status == 0 {
 			recorder.status = http.StatusOK
 		}
-		route := r.Pattern
+		route := loggedRequest.Pattern
 		if route == "" {
 			route = "unmatched"
 		}
-		s.requestCount.WithLabelValues(r.Method, route, strconv.Itoa(recorder.status)).Inc()
-		s.requestLatency.WithLabelValues(r.Method, route).Observe(time.Since(started).Seconds())
+		method := metricMethod(r.Method)
+		s.requestCount.WithLabelValues(method, route, strconv.Itoa(recorder.status)).Inc()
+		s.requestLatency.WithLabelValues(method, route).Observe(time.Since(started).Seconds())
 		s.logger.Info("http request", "request_id", id, "method", r.Method,
 			"path", r.URL.Path, "host", r.Host, "status", recorder.status,
 			"response_bytes", recorder.bytes, "duration_ms", time.Since(started).Milliseconds())
@@ -413,6 +371,7 @@ func (w *statusResponseWriter) Write(body []byte) (int, error) {
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
@@ -476,12 +435,17 @@ func (s *Server) clientIP(r *http.Request) string {
 		return ""
 	}
 	if s.isTrustedProxy(r.RemoteAddr) {
-		forwarded := r.Header.Get("Cf-Connecting-Ip")
-		if forwarded == "" {
-			forwarded = strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-		}
-		if net.ParseIP(forwarded) != nil {
-			return forwarded
+		hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+		// Walk from the direct proxy towards the client. An incoming attacker
+		// prefix must not win when Nginx appends the real source address.
+		for i := len(hops) - 1; i >= 0; i-- {
+			ip := net.ParseIP(strings.TrimSpace(hops[i]))
+			if ip == nil {
+				return host
+			}
+			if !s.isTrustedIP(ip) || i == 0 {
+				return ip.String()
+			}
 		}
 	}
 	return host
@@ -493,6 +457,10 @@ func (s *Server) isTrustedProxy(remoteAddress string) bool {
 		return false
 	}
 	remote := net.ParseIP(host)
+	return s.isTrustedIP(remote)
+}
+
+func (s *Server) isTrustedIP(remote net.IP) bool {
 	for _, rawNetwork := range s.config.TrustedProxyCIDRs {
 		_, network, parseErr := net.ParseCIDR(rawNetwork)
 		if parseErr == nil && remote != nil && network.Contains(remote) {
@@ -506,13 +474,20 @@ func (s *Server) allowRequest(key string, limit int, window time.Duration) (bool
 	now := time.Now()
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
-	for item, value := range s.rates {
-		if !value.Reset.After(now) {
-			delete(s.rates, item)
+	if !s.rateSweep.After(now) {
+		for item, value := range s.rates {
+			if !value.Reset.After(now) {
+				delete(s.rates, item)
+			}
 		}
+		s.rateSweep = now.Add(time.Second)
 	}
 	current := s.rates[key]
-	if current.Reset.IsZero() {
+	if !current.Reset.After(now) {
+		if _, exists := s.rates[key]; !exists && len(s.rates) >= 4096 {
+			return false, time.Second
+		}
+		current.Count = 0
 		current.Reset = now.Add(window)
 	}
 	if current.Count >= limit {
@@ -523,25 +498,45 @@ func (s *Server) allowRequest(key string, limit int, window time.Duration) (bool
 	return true, 0
 }
 
+func (s *Server) limitExpensive(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.cryptoSlots <- struct{}{}:
+			defer func() { <-s.cryptoSlots }()
+			next.ServeHTTP(w, r)
+		default:
+			rateLimited(w, time.Second)
+		}
+	})
+}
+
+func metricMethod(method string) string {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return method
+	default:
+		return "OTHER"
+	}
+}
+
 func rateLimited(w http.ResponseWriter, retry time.Duration) {
 	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()))))
 	problem(w, http.StatusTooManyRequests, "rate_limited", "Too many requests; retry later")
 }
 
-func (s *Server) audit(r *http.Request, action, resourceType string, resourceID *string, outcome string, metadata any) {
+func (s *Server) audit(r *http.Request, action, resourceType string, resourceID *string, outcome string, metadata any) error {
 	p := principal(r)
-	var actorID, role, sessionID, accessSub *string
+	var actorID, role, sessionID *string
 	if p.User.ID != "" {
 		actorID, role, sessionID = &p.User.ID, &p.User.Role, &p.SessionID
-	}
-	if p.AccessSub != "" {
-		accessSub = &p.AccessSub
 	}
 	ip := s.clientIP(r)
 	if err := s.store.Audit(r.Context(), store.AuditEvent{ActorUserID: actorID, ActorRole: role,
 		SessionID: sessionID, Action: action, ResourceType: resourceType, ResourceID: resourceID,
 		Outcome: outcome, RequestID: requestID(r), SourceIP: &ip, UserAgent: r.UserAgent(),
-		AccessSub: accessSub, Metadata: metadata}); err != nil {
+		Metadata: metadata}); err != nil {
 		s.logger.Error("write audit event", "request_id", requestID(r), "error", err)
+		return err
 	}
+	return nil
 }

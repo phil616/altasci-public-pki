@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -327,9 +328,12 @@ func (s *Store) ClaimIssuanceJob(ctx context.Context, worker string) (string, st
 	}
 	defer tx.Rollback(ctx)
 	var jobID, requestID string
-	err = tx.QueryRow(ctx, `SELECT id::text,request_id::text FROM issuance_jobs
-        WHERE status IN ('queued','failed') AND next_attempt_at<=now()
-        ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&jobID, &requestID)
+	err = tx.QueryRow(ctx, `SELECT j.id::text,j.request_id::text FROM issuance_jobs j
+        JOIN certificate_requests r ON r.id=j.request_id
+        WHERE r.status IN ('approved','issuing') AND (
+          (j.status IN ('queued','failed') AND j.next_attempt_at<=now()) OR
+          (j.status='running' AND j.locked_at<now()-interval '5 minutes'))
+        ORDER BY j.created_at FOR UPDATE OF j SKIP LOCKED LIMIT 1`).Scan(&jobID, &requestID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
@@ -340,7 +344,7 @@ func (s *Store) ClaimIssuanceJob(ctx context.Context, worker string) (string, st
         locked_by=$2,locked_at=now(),updated_at=now() WHERE id=$1`, jobID, worker); err != nil {
 		return "", "", err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE certificate_requests SET status='issuing',updated_at=now(),version=version+1 WHERE id=$1 AND status='approved'`, requestID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE certificate_requests SET status='issuing',updated_at=now(),version=version+1 WHERE id=$1 AND status IN ('approved','issuing')`, requestID); err != nil {
 		return "", "", err
 	}
 	return jobID, requestID, tx.Commit(ctx)
@@ -354,7 +358,10 @@ type KeyArtifact struct {
 	ExpiresAt         time.Time
 }
 
-func (s *Store) ConsumeLeafKeyArtifact(ctx context.Context, certificateID, ownerUserID string, now time.Time) (KeyArtifact, error) {
+func (s *Store) ConsumeLeafKeyArtifact(ctx context.Context, certificateID, ownerUserID string, now time.Time, validate func(KeyArtifact) error) (KeyArtifact, error) {
+	if validate == nil {
+		return KeyArtifact{}, errors.New("key artifact validation is required")
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return KeyArtifact{}, err
@@ -372,6 +379,9 @@ func (s *Store) ConsumeLeafKeyArtifact(ctx context.Context, certificateID, owner
 	if err != nil {
 		return KeyArtifact{}, err
 	}
+	if err := validate(artifact); err != nil {
+		return KeyArtifact{}, err
+	}
 	_, err = tx.Exec(ctx, `UPDATE leaf_key_artifacts SET downloaded_at=$2,erased_at=$2,
         encrypted_pkcs8=$3,nonce=$4 WHERE certificate_id=$1`, certificateID, now,
 		[]byte{}, make([]byte, 12))
@@ -381,12 +391,27 @@ func (s *Store) ConsumeLeafKeyArtifact(ctx context.Context, certificateID, owner
 	return artifact, tx.Commit(ctx)
 }
 
-func (s *Store) CompleteIssuance(ctx context.Context, jobID string, cert Certificate, artifact *KeyArtifact) error {
+func (s *Store) CompleteIssuance(ctx context.Context, jobID, owner string, cert Certificate, artifact *KeyArtifact) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	var requestID, requesterID string
+	err = tx.QueryRow(ctx, `SELECT j.request_id::text,r.requester_id::text
+        FROM issuance_jobs j JOIN certificate_requests r ON r.id=j.request_id
+        WHERE j.id=$1 AND j.status='running' AND j.locked_by=$2 AND r.status='issuing'
+        FOR UPDATE OF j,r`, jobID, owner).Scan(&requestID, &requesterID)
+	if err != nil {
+		return err
+	}
+	if cert.RequestID == nil || *cert.RequestID != requestID || cert.OwnerUserID != requesterID {
+		return errors.New("issuance result does not match claimed request")
+	}
+	var activeUser string
+	if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 AND status='active' FOR SHARE`, requesterID).Scan(&activeUser); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO certificates
         (id,issuer_ca_id,owner_user_id,request_id,profile_id,serial,aki,ski,fingerprint_sha256,
          certificate_pem,chain_pem,subject,sans,key_usages,extended_key_usages,not_before,not_after,status)
@@ -416,7 +441,7 @@ func (s *Store) CompleteIssuance(ctx context.Context, jobID string, cert Certifi
 	return tx.Commit(ctx)
 }
 
-func (s *Store) FailIssuance(ctx context.Context, jobID, requestID, code string, retry bool) error {
+func (s *Store) FailIssuance(ctx context.Context, jobID, requestID, owner, code string, retry bool) error {
 	status := "failed"
 	next := time.Now().Add(5 * time.Minute)
 	if !retry {
@@ -427,12 +452,20 @@ func (s *Store) FailIssuance(ctx context.Context, jobID, requestID, code string,
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `UPDATE issuance_jobs SET status=$2,last_error_code=$3,
-        next_attempt_at=$4,locked_by=NULL,locked_at=NULL,updated_at=now() WHERE id=$1`, jobID, status, code, next)
+	command, err := tx.Exec(ctx, `UPDATE issuance_jobs SET status=$2,last_error_code=$3,
+        next_attempt_at=$4,locked_by=NULL,locked_at=NULL,updated_at=now()
+        WHERE id=$1 AND request_id=$5 AND status='running' AND locked_by=$6`, jobID, status, code, next, requestID, owner)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE certificate_requests SET status='failed',error_code=$2,updated_at=now(),version=version+1 WHERE id=$1`, requestID, code)
+	if command.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	requestStatus := "failed"
+	if retry {
+		requestStatus = "approved"
+	}
+	_, err = tx.Exec(ctx, `UPDATE certificate_requests SET status=$3,error_code=$2,updated_at=now(),version=version+1 WHERE id=$1 AND status='issuing'`, requestID, code, requestStatus)
 	if err != nil {
 		return err
 	}
@@ -644,21 +677,54 @@ func (s *Store) RevokedCertificates(ctx context.Context, caID string) ([]Revoked
 	return out, rows.Err()
 }
 
-func (s *Store) SaveCRL(ctx context.Context, caID string, der, digest []byte, thisUpdate, nextUpdate time.Time) error {
+// RefreshCRL serializes the revocation snapshot, signature and publication for
+// one CA across all processes. An older snapshot cannot overwrite a newer CRL.
+func (s *Store) RefreshCRL(ctx context.Context, caID string, generate func([]RevokedCertificate, int64) ([]byte, time.Time, time.Time, error)) ([]byte, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "crl:"+caID); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `SELECT c.serial::text,r.revoked_at,r.reason FROM certificates c
+        JOIN revocations r ON r.certificate_id=c.id WHERE c.issuer_ca_id=$1 AND c.not_after>now() ORDER BY c.serial`, caID)
+	if err != nil {
+		return nil, err
+	}
+	var revoked []RevokedCertificate
+	for rows.Next() {
+		var cert RevokedCertificate
+		if err := rows.Scan(&cert.Serial, &cert.RevokedAt, &cert.Reason); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		revoked = append(revoked, cert)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	var number int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(crl_number)+1,1) FROM crls WHERE ca_id=$1`, caID).Scan(&number); err != nil {
+		return nil, err
+	}
+	der, thisUpdate, nextUpdate, err := generate(revoked, number)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(der)
 	if _, err = tx.Exec(ctx, `UPDATE crls SET is_current=false WHERE ca_id=$1 AND is_current`, caID); err != nil {
-		return err
+		return nil, err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO crls(ca_id,crl_number,der,sha256,this_update,next_update)
-        VALUES ($1,COALESCE((SELECT max(crl_number)+1 FROM crls WHERE ca_id=$1),1),$2,$3,$4,$5)`, caID, der, digest, thisUpdate, nextUpdate)
+        VALUES ($1,$2,$3,$4,$5,$6)`, caID, number, der, digest[:], thisUpdate, nextUpdate)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	return der, tx.Commit(ctx)
 }
 
 func (s *Store) CurrentCRL(ctx context.Context, caID string) ([]byte, time.Time, error) {

@@ -5,9 +5,6 @@ package bundler
 import (
 	"bytes"
 	"crypto"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -71,7 +68,8 @@ type Bundler struct {
 }
 
 type options struct {
-	keyUsages []x509.ExtKeyUsage
+	keyUsages          []x509.ExtKeyUsage
+	disableAIAFetching bool
 }
 
 var defaultOptions = options{
@@ -82,6 +80,12 @@ var defaultOptions = options{
 
 // An Option sets options such as allowed key usages, etc.
 type Option func(*options)
+
+// WithoutAIAFetching restricts bundling to the supplied certificates and pools.
+// Use this when certificates come from an untrusted HTTP client.
+func WithoutAIAFetching() Option {
+	return func(opts *options) { opts.disableAIAFetching = true }
+}
 
 // WithKeyUsages lets you set which Extended Key Usage values are acceptable. By
 // default x509.ExtKeyUsageAny will be used.
@@ -556,10 +560,10 @@ func (b *Bundler) fetchIntermediates(certs []*x509.Certificate) (err error) {
 // formats (i.e. *rsa.PrivateKey, *ecdsa.PrivateKey or ed25519.PrivateKey, or even a opaque key), using them to
 // build a certificate bundle.
 func (b *Bundler) Bundle(certs []*x509.Certificate, key crypto.Signer, flavor BundleFlavor) (*Bundle, error) {
-	log.Infof("bundling certificate for %+v", certs[0].Subject)
-	if len(certs) == 0 {
-		return nil, nil
+	if len(certs) == 0 || certs[0] == nil {
+		return nil, errors.New(errors.CertificateError, errors.DecodeFailed)
 	}
+	log.Infof("bundling certificate for %+v", certs[0].Subject)
 
 	// Detect reverse ordering of the cert chain.
 	if len(certs) > 1 && !partialVerify(certs) {
@@ -569,44 +573,17 @@ func (b *Bundler) Bundle(certs []*x509.Certificate, key crypto.Signer, flavor Bu
 		}
 	}
 
-	var ok bool
 	cert := certs[0]
+	switch cert.PublicKeyAlgorithm {
+	case x509.RSA, x509.ECDSA, x509.Ed25519:
+	default:
+		return nil, errors.New(errors.PrivateKeyError, errors.NotRSAOrECCOrEd25519)
+	}
 	if key != nil {
-		switch {
-		case cert.PublicKeyAlgorithm == x509.RSA:
-			var rsaPublicKey *rsa.PublicKey
-			if rsaPublicKey, ok = key.Public().(*rsa.PublicKey); !ok {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-			if cert.PublicKey.(*rsa.PublicKey).N.Cmp(rsaPublicKey.N) != 0 {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-		case cert.PublicKeyAlgorithm == x509.ECDSA:
-			var ecdsaPublicKey *ecdsa.PublicKey
-			if ecdsaPublicKey, ok = key.Public().(*ecdsa.PublicKey); !ok {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-			if cert.PublicKey.(*ecdsa.PublicKey).X.Cmp(ecdsaPublicKey.X) != 0 {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-		case cert.PublicKeyAlgorithm == x509.Ed25519:
-			var ed25519PublicKey ed25519.PublicKey
-			if ed25519PublicKey, ok = key.Public().(ed25519.PublicKey); !ok {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-			if !(bytes.Equal(cert.PublicKey.(ed25519.PublicKey), ed25519PublicKey)) {
-				return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
-			}
-		default:
-			return nil, errors.New(errors.PrivateKeyError, errors.NotRSAOrECCOrEd25519)
-		}
-	} else {
-		switch {
-		case cert.PublicKeyAlgorithm == x509.RSA:
-		case cert.PublicKeyAlgorithm == x509.ECDSA:
-		case cert.PublicKeyAlgorithm == x509.Ed25519:
-		default:
-			return nil, errors.New(errors.PrivateKeyError, errors.NotRSAOrECCOrEd25519)
+		certificateKey, certErr := x509.MarshalPKIXPublicKey(cert.PublicKey)
+		privateKeyPublic, keyErr := x509.MarshalPKIXPublicKey(key.Public())
+		if certErr != nil || keyErr != nil || !bytes.Equal(certificateKey, privateKeyPublic) {
+			return nil, errors.New(errors.PrivateKeyError, errors.KeyMismatch)
 		}
 	}
 
@@ -644,6 +621,9 @@ func (b *Bundler) Bundle(certs []*x509.Certificate, key crypto.Signer, flavor Bu
 			}
 
 			log.Debugf("searching for intermediates via AIA issuer")
+			if b.opts.disableAIAFetching {
+				return nil, errors.Wrap(errors.CertificateError, errors.VerifyFailed, err)
+			}
 			searchErr := b.fetchIntermediates(certs)
 			if searchErr != nil {
 				log.Debugf("search failed: %v", searchErr)

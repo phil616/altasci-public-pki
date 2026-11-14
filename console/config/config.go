@@ -2,9 +2,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base32"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultListenAddress          = ":8080"
+	defaultListenAddress          = "127.0.0.1:8080"
 	defaultSessionIdle            = 8 * time.Hour
 	defaultSessionMax             = 24 * time.Hour
 	defaultRootIdle               = 30 * time.Minute
@@ -36,11 +36,8 @@ type Config struct {
 	RootUserEmail          string
 	RootUserPassword       string
 	RootUserTOTPSecret     []byte
-	AccessTeamDomain       string
-	AccessAudience         string
 	MasterKeyActiveID      string
 	MasterKeys             map[string][]byte
-	OriginSharedSecret     []byte
 	SessionIdle            time.Duration
 	SessionMax             time.Duration
 	RootSessionIdle        time.Duration
@@ -59,8 +56,6 @@ func Load() (Config, error) {
 		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		RootUserEmail:          strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_USER_EMAIL"))),
 		RootUserPassword:       os.Getenv("ROOT_USER_PASSWORD"),
-		AccessTeamDomain:       strings.TrimRight(strings.TrimSpace(os.Getenv("CF_ACCESS_TEAM_DOMAIN")), "/"),
-		AccessAudience:         strings.TrimSpace(os.Getenv("CF_ACCESS_AUD")),
 		MasterKeyActiveID:      strings.TrimSpace(os.Getenv("PKI_MASTER_KEY_ACTIVE_ID")),
 		SessionIdle:            defaultSessionIdle,
 		SessionMax:             defaultSessionMax,
@@ -101,9 +96,6 @@ func Load() (Config, error) {
 	if c.MasterKeys, err = parseMasterKeys(os.Getenv("PKI_MASTER_KEYS")); err != nil {
 		return Config{}, err
 	}
-	if c.OriginSharedSecret, err = parseOriginSharedSecret(os.Getenv("PKI_ORIGIN_SHARED_SECRET")); err != nil {
-		return Config{}, err
-	}
 	return c, c.Validate()
 }
 
@@ -117,8 +109,6 @@ func (c Config) Validate() error {
 		"ROOT_USER_EMAIL":          c.RootUserEmail,
 		"ROOT_USER_PASSWORD":       c.RootUserPassword,
 		"ROOT_USER_TOTP_SECRET":    string(c.RootUserTOTPSecret),
-		"CF_ACCESS_TEAM_DOMAIN":    c.AccessTeamDomain,
-		"CF_ACCESS_AUD":            c.AccessAudience,
 		"PKI_MASTER_KEY_ACTIVE_ID": c.MasterKeyActiveID,
 	} {
 		if value == "" {
@@ -130,6 +120,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.RootUserPassword) < 32 {
 		return errors.New("ROOT_USER_PASSWORD must contain at least 32 characters")
+	}
+	if c.RootUserPassword == "replace-with-at-least-32-random-characters" {
+		return errors.New("ROOT_USER_PASSWORD must not use the example placeholder")
 	}
 	listenHost, _, err := net.SplitHostPort(c.ListenAddress)
 	if err != nil {
@@ -151,26 +144,31 @@ func (c Config) Validate() error {
 			return errors.New("DATABASE_URL cannot disable TLS outside development mode unless the host is an explicit loopback IP")
 		}
 	}
+	if !c.DevelopmentInsecure {
+		databaseIP := net.ParseIP(databaseURL.Hostname())
+		if (databaseIP == nil || !databaseIP.IsLoopback()) && databaseURL.Query().Get("sslmode") != "verify-full" {
+			return errors.New("remote DATABASE_URL must explicitly use sslmode=verify-full")
+		}
+	}
 	if len(c.RootUserTOTPSecret) < 20 {
 		return errors.New("ROOT_USER_TOTP_SECRET must contain at least 160 bits")
 	}
-	if !c.DevelopmentInsecure && len(c.OriginSharedSecret) == 0 {
-		return errors.New("PKI_ORIGIN_SHARED_SECRET is required outside development mode")
-	}
-	if len(c.OriginSharedSecret) != 0 && len(c.OriginSharedSecret) != 32 {
-		return errors.New("PKI_ORIGIN_SHARED_SECRET must decode to exactly 32 bytes")
+	if bytes.Equal(c.RootUserTOTPSecret, make([]byte, len(c.RootUserTOTPSecret))) {
+		return errors.New("ROOT_USER_TOTP_SECRET must not use the all-zero example secret")
 	}
 	if !strings.Contains(c.RootUserEmail, "@") {
 		return errors.New("ROOT_USER_EMAIL must be a valid email address")
 	}
-	if c.PublicHostname == c.ConsoleHostname {
+	if strings.EqualFold(strings.TrimSuffix(c.PublicHostname, "."), strings.TrimSuffix(c.ConsoleHostname, ".")) {
 		return errors.New("PUBLIC_BASE_URL and CONSOLE_BASE_URL must use different hostnames")
-	}
-	if !strings.HasPrefix(c.AccessTeamDomain, "https://") {
-		return errors.New("CF_ACCESS_TEAM_DOMAIN must be an https URL")
 	}
 	if key := c.MasterKeys[c.MasterKeyActiveID]; len(key) != 32 {
 		return errors.New("active PKI master key must exist and decode to exactly 32 bytes")
+	}
+	for _, key := range c.MasterKeys {
+		if len(key) != 32 || bytes.Equal(key, make([]byte, 32)) {
+			return errors.New("PKI_MASTER_KEYS must contain nonzero 32-byte keys, not example keys")
+		}
 	}
 	for _, network := range c.TrustedProxyCIDRs {
 		if _, _, err := net.ParseCIDR(network); err != nil {
@@ -184,21 +182,6 @@ func (c Config) Validate() error {
 		return errors.New("TSA_MAX_CLOCK_UNCERTAINTY must be between 1ms and 1m")
 	}
 	return nil
-}
-
-func parseOriginSharedSecret(raw string) ([]byte, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	if len(raw) != 64 {
-		return nil, errors.New("PKI_ORIGIN_SHARED_SECRET must be exactly 64 hexadecimal characters")
-	}
-	secret, err := hex.DecodeString(raw)
-	if err != nil {
-		return nil, errors.New("PKI_ORIGIN_SHARED_SECRET must contain only hexadecimal characters")
-	}
-	return secret, nil
 }
 
 func parseMasterKeys(raw string) (map[string][]byte, error) {
@@ -228,13 +211,21 @@ func parseHTTPSURL(name, raw string, allowHTTP bool) (*url.URL, error) {
 		return nil, nil
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return nil, fmt.Errorf("%s must be an absolute origin URL", name)
 	}
 	if u.Scheme != "https" && !(allowHTTP && u.Scheme == "http") {
 		return nil, fmt.Errorf("%s must use https", name)
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		u.Host = "[" + host + "]"
+	} else {
+		u.Host = host
+	}
 	return u, nil
 }
 

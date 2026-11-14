@@ -1,0 +1,330 @@
+--- a/vendor/github.com/digitorus/timestamp/rfc3161_struct.go
++++ b/vendor/github.com/digitorus/timestamp/rfc3161_struct.go
+@@ -16,6 +16,15 @@
+ 	Nonce          *big.Int              `asn1:"optional"`
+ 	CertReq        bool                  `asn1:"optional,default:false"`
+ 	Extensions     []pkix.Extension      `asn1:"tag:0,optional"`
++}
++
++type requestWithRawPolicy struct {
++	Version        int
++	MessageImprint messageImprint
++	ReqPolicy      asn1.RawValue
++	Nonce          *big.Int         `asn1:"optional"`
++	CertReq        bool             `asn1:"optional,default:false"`
++	Extensions     []pkix.Extension `asn1:"tag:0,optional"`
+ }
+ 
+ type messageImprint struct {
+@@ -51,7 +60,7 @@
+ // eContent within SignedData is TSTInfo
+ type tstInfo struct {
+ 	Version        int
+-	Policy         asn1.ObjectIdentifier
++	Policy         asn1.RawValue
+ 	MessageImprint messageImprint
+ 	SerialNumber   *big.Int
+ 	Time           time.Time        `asn1:"generalized"`
+--- a/vendor/github.com/digitorus/timestamp/timestamp.go
++++ b/vendor/github.com/digitorus/timestamp/timestamp.go
+@@ -8,6 +8,7 @@
+ 	"crypto/x509"
+ 	"crypto/x509/pkix"
+ 	"encoding/asn1"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"math/big"
+@@ -128,8 +129,13 @@
+ 	Certificates bool
+ 
+ 	// The TSAPolicyOID field, if provided, indicates the TSA policy under
+-	// which the TimeStampToken SHOULD be provided
++	// which the TimeStampToken SHOULD be provided. It is retained for callers
++	// using OIDs whose arcs fit encoding/asn1.ObjectIdentifier.
+ 	TSAPolicyOID asn1.ObjectIdentifier
++
++	// TSAPolicy supports OIDs with arbitrarily large arcs, including the
++	// 2.25 UUID-derived namespace defined by ITU-T X.667.
++	TSAPolicy x509.OID
+ 
+ 	// The nonce, if provided, allows the client to verify the timeliness of
+ 	// the response.
+@@ -152,39 +158,98 @@
+ 
+ // ParseRequest parses an timestamp request in DER form.
+ func ParseRequest(bytes []byte) (*Request, error) {
+-	var err error
+-	var rest []byte
+-	var req request
+-
+-	if rest, err = asn1.Unmarshal(bytes, &req); err != nil {
+-		return nil, err
+-	}
+-	if len(rest) > 0 {
++	var sequence asn1.RawValue
++	rest, err := asn1.Unmarshal(bytes, &sequence)
++	if err != nil {
++		return nil, err
++	}
++	if len(rest) > 0 || sequence.Class != 0 || sequence.Tag != asn1.TagSequence || !sequence.IsCompound {
+ 		return nil, ParseError("trailing data in Time-Stamp request")
+ 	}
+-
+-	if len(req.MessageImprint.HashedMessage) == 0 {
++	body := sequence.Bytes
++	var version int
++	if body, err = asn1.Unmarshal(body, &version); err != nil {
++		return nil, err
++	}
++	var imprint messageImprint
++	if body, err = asn1.Unmarshal(body, &imprint); err != nil {
++		return nil, err
++	}
++
++	var policy x509.OID
++	var legacyPolicy asn1.ObjectIdentifier
++	if raw, remaining, ok, rawErr := consumeRawTag(body, 0, asn1.TagOID); rawErr != nil {
++		return nil, rawErr
++	} else if ok {
++		policy, err = oidFromRawValue(raw)
++		if err != nil {
++			return nil, err
++		}
++		_, _ = asn1.Unmarshal(raw.FullBytes, &legacyPolicy)
++		body = remaining
++	}
++
++	var nonce *big.Int
++	if _, remaining, ok, rawErr := consumeRawTag(body, 0, asn1.TagInteger); rawErr != nil {
++		return nil, rawErr
++	} else if ok {
++		if remaining, err = asn1.Unmarshal(body, &nonce); err != nil {
++			return nil, err
++		}
++		body = remaining
++	}
++
++	var certReq bool
++	if _, remaining, ok, rawErr := consumeRawTag(body, 0, asn1.TagBoolean); rawErr != nil {
++		return nil, rawErr
++	} else if ok {
++		if remaining, err = asn1.Unmarshal(body, &certReq); err != nil {
++			return nil, err
++		}
++		body = remaining
++	}
++
++	var extensions []pkix.Extension
++	if raw, remaining, ok, rawErr := consumeRawTag(body, 2, 0); rawErr != nil {
++		return nil, rawErr
++	} else if ok {
++		extensionBytes := raw.Bytes
++		for len(extensionBytes) > 0 {
++			var extension pkix.Extension
++			if extensionBytes, err = asn1.Unmarshal(extensionBytes, &extension); err != nil {
++				return nil, err
++			}
++			extensions = append(extensions, extension)
++		}
++		body = remaining
++	}
++	if len(body) != 0 {
++		return nil, ParseError("trailing data in Time-Stamp request")
++	}
++
++	if len(imprint.HashedMessage) == 0 {
+ 		return nil, ParseError("Time-Stamp request contains no hashed message")
+ 	}
+ 
+-	hashFunc := getHashAlgorithmFromOID(req.MessageImprint.HashAlgorithm.Algorithm)
++	hashFunc := getHashAlgorithmFromOID(imprint.HashAlgorithm.Algorithm)
+ 	if hashFunc == crypto.Hash(0) {
+ 		return nil, ParseError("Time-Stamp request uses unknown hash function")
+ 	}
+ 
+ 	return &Request{
+ 		HashAlgorithm: hashFunc,
+-		HashedMessage: req.MessageImprint.HashedMessage,
+-		Certificates:  req.CertReq,
+-		Nonce:         req.Nonce,
+-		TSAPolicyOID:  req.ReqPolicy,
+-		Extensions:    req.Extensions,
++		HashedMessage: imprint.HashedMessage,
++		Certificates:  certReq,
++		Nonce:         nonce,
++		TSAPolicyOID:  legacyPolicy,
++		TSAPolicy:     policy,
++		Extensions:    extensions,
+ 	}, nil
+ }
+ 
+ // Marshal marshals the Time-Stamp request to ASN.1 DER encoded form.
+ func (req *Request) Marshal() ([]byte, error) {
+-	request := request{
++	base := request{
+ 		Version: 1,
+ 		MessageImprint: messageImprint{
+ 			HashAlgorithm: pkix.AlgorithmIdentifier{
+@@ -196,16 +261,23 @@
+ 			HashedMessage: req.HashedMessage,
+ 		},
+ 		CertReq:    req.Certificates,
++		Nonce:      req.Nonce,
+ 		Extensions: req.ExtraExtensions,
+ 	}
+-
++	if req.TSAPolicy.String() != "" {
++		rawPolicy, err := oidRawValue(req.TSAPolicy)
++		if err != nil {
++			return nil, err
++		}
++		return asn1.Marshal(requestWithRawPolicy{
++			Version: base.Version, MessageImprint: base.MessageImprint, ReqPolicy: rawPolicy,
++			Nonce: base.Nonce, CertReq: base.CertReq, Extensions: base.Extensions,
++		})
++	}
+ 	if req.TSAPolicyOID != nil {
+-		request.ReqPolicy = req.TSAPolicyOID
+-	}
+-	if req.Nonce != nil {
+-		request.Nonce = req.Nonce
+-	}
+-	reqBytes, err := asn1.Marshal(request)
++		base.ReqPolicy = req.TSAPolicyOID
++	}
++	reqBytes, err := asn1.Marshal(base)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -224,10 +296,13 @@
+ 	Time         time.Time
+ 	Accuracy     time.Duration
+ 	SerialNumber *big.Int
+-	Policy       asn1.ObjectIdentifier
+-	Ordering     bool
+-	Nonce        *big.Int
+-	Qualified    bool
++	// Policy is retained for OIDs representable by encoding/asn1.
++	Policy asn1.ObjectIdentifier
++	// PolicyOID supports arbitrary-sized OID arcs.
++	PolicyOID x509.OID
++	Ordering  bool
++	Nonce     *big.Int
++	Qualified bool
+ 
+ 	Certificates []*x509.Certificate
+ 
+@@ -309,6 +384,12 @@
+ 	if _, err = asn1.Unmarshal(p7.Content, &inf); err != nil {
+ 		return nil, err
+ 	}
++	policyOID, err := oidFromRawValue(inf.Policy)
++	if err != nil {
++		return nil, err
++	}
++	var legacyPolicy asn1.ObjectIdentifier
++	_, _ = asn1.Unmarshal(inf.Policy.FullBytes, &legacyPolicy)
+ 
+ 	if len(inf.MessageImprint.HashedMessage) == 0 {
+ 		return nil, ParseError("Time-Stamp response contains no hashed message")
+@@ -322,7 +403,8 @@
+ 			(time.Millisecond * time.Duration(inf.Accuracy.Milliseconds)) +
+ 			(time.Microsecond * time.Duration(inf.Accuracy.Microseconds))),
+ 		SerialNumber:      inf.SerialNumber,
+-		Policy:            inf.Policy,
++		Policy:            legacyPolicy,
++		PolicyOID:         policyOID,
+ 		Ordering:          inf.Ordering,
+ 		Nonce:             inf.Nonce,
+ 		Certificates:      p7.Certificates,
+@@ -354,6 +436,9 @@
+ 	// which the TimeStampToken SHOULD be provided
+ 	TSAPolicyOID asn1.ObjectIdentifier
+ 
++	// TSAPolicy supports OIDs with arbitrary-sized arcs.
++	TSAPolicy x509.OID
++
+ 	// The nonce, if provided, allows the client to verify the timeliness of
+ 	// the response.
+ 	Nonce *big.Int
+@@ -398,6 +483,9 @@
+ 	}
+ 	if opts != nil && opts.TSAPolicyOID != nil {
+ 		req.TSAPolicyOID = opts.TSAPolicyOID
++	}
++	if opts != nil && opts.TSAPolicy.String() != "" {
++		req.TSAPolicy = opts.TSAPolicy
+ 	}
+ 	if opts != nil && opts.Nonce != nil {
+ 		req.Nonce = opts.Nonce
+@@ -417,7 +505,18 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	tstInfo, err := t.populateTSTInfo(messageImprint, t.Policy, tsaSerialNumber, signingCert)
++	policyOID := t.PolicyOID
++	if policyOID.String() == "" && len(t.Policy) != 0 {
++		policyOID, err = x509.OIDFromASN1OID(t.Policy)
++		if err != nil {
++			return nil, err
++		}
++	}
++	policyRaw, err := oidRawValue(policyOID)
++	if err != nil {
++		return nil, err
++	}
++	tstInfo, err := t.populateTSTInfo(messageImprint, policyRaw, tsaSerialNumber, signingCert)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -503,7 +602,7 @@
+ 	return serialNumber, nil
+ }
+ 
+-func (t *Timestamp) populateTSTInfo(messageImprint messageImprint, policyOID asn1.ObjectIdentifier, tsaSerialNumber *big.Int, tsaCert *x509.Certificate) ([]byte, error) {
++func (t *Timestamp) populateTSTInfo(messageImprint messageImprint, policyOID asn1.RawValue, tsaSerialNumber *big.Int, tsaCert *x509.Certificate) ([]byte, error) {
+ 	dirGeneralName, err := asn1.Marshal(asn1.RawValue{Tag: 4, Class: 2, IsCompound: true, Bytes: tsaCert.RawSubject})
+ 	if err != nil {
+ 		return nil, err
+@@ -561,6 +660,40 @@
+ 	return tstInfoBytes, nil
+ }
+ 
++func oidRawValue(oid x509.OID) (asn1.RawValue, error) {
++	der, err := oid.MarshalBinary()
++	if err != nil || len(der) == 0 {
++		return asn1.RawValue{}, errors.New("invalid TSA policy OID")
++	}
++	return asn1.RawValue{Class: 0, Tag: asn1.TagOID, Bytes: der}, nil
++}
++
++func oidFromRawValue(raw asn1.RawValue) (x509.OID, error) {
++	if raw.Class != 0 || raw.Tag != asn1.TagOID || raw.IsCompound || len(raw.Bytes) == 0 {
++		return x509.OID{}, errors.New("invalid TSA policy OID")
++	}
++	var oid x509.OID
++	if err := oid.UnmarshalBinary(raw.Bytes); err != nil {
++		return x509.OID{}, err
++	}
++	return oid, nil
++}
++
++func consumeRawTag(der []byte, class, tag int) (asn1.RawValue, []byte, bool, error) {
++	if len(der) == 0 {
++		return asn1.RawValue{}, der, false, nil
++	}
++	var raw asn1.RawValue
++	rest, err := asn1.Unmarshal(der, &raw)
++	if err != nil {
++		return asn1.RawValue{}, nil, false, err
++	}
++	if raw.Class != class || raw.Tag != tag {
++		return asn1.RawValue{}, der, false, nil
++	}
++	return raw, rest, true, nil
++}
++
+ func (t *Timestamp) populateSigningCertificateV2Ext(certificate *x509.Certificate) ([]byte, error) {
+ 	if !t.HashAlgorithm.Available() {
+ 		return nil, x509.ErrUnsupportedAlgorithm

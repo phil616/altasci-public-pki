@@ -52,10 +52,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await consoleAPI.logout();
       } catch (error) {
         if (!(error instanceof APIError && error.status === 401)) throw error;
-      } finally {
-        clearSession();
-        queryClient.clear();
       }
+      clearSession();
+      queryClient.clear();
     },
   }), [clearSession, queryClient, session.data?.user, session.isPending]);
 

@@ -1,3 +1,7 @@
+> 历史文档：本文中的 Cloudflare / Pages / Access / Tunnel 部署步骤适用于旧版本。
+> 当前单体应用使用本地密码/TOTP、外部 PostgreSQL 和 Nginx，部署与迁移以
+> [production-deployment.md](production-deployment.md) 为准；Web 业务流程与数据库操作请结合当前版本核对。
+
 # 2026-08-24 超级管理员登录故障复盘
 
 状态：已解决。生产用户已完成真实登录验证。

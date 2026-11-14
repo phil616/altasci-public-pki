@@ -5,6 +5,18 @@ PKI_CONSOLE_LDFLAGS := "-s -w -X main.version=$(PKI_CONSOLE_VERSION)"
 
 export GOFLAGS := -mod=vendor
 export GOPROXY := off
+GOVULNCHECK ?= govulncheck
+
+# Preserve the existing RFC 3161 large-OID/parser fixes when updating modules.
+.PHONY: vendor
+vendor:
+	go mod vendor
+	git apply vendor-patches/timestamp-oid.patch
+
+.PHONY: pki-console-security
+pki-console-security:
+	$(GOVULNCHECK) ./cmd/pki-console
+	cd web && npm audit --audit-level=low
 
 .PHONY: all
 all: bin/cfssl bin/cfssl-bundle bin/cfssl-certinfo bin/cfssl-newkey bin/cfssl-scan bin/cfssljson bin/mkbundle bin/multirootca
@@ -18,7 +30,7 @@ pki-console-web:
 	cd web && npm run build
 
 .PHONY: pki-console-system
-pki-console-system: pki-console pki-console-web
+pki-console-system: pki-console
 
 .PHONY: pki-console-check
 pki-console-check:
@@ -32,7 +44,7 @@ pki-console-e2e:
 	cd web && npm ci --no-audit --no-fund
 	cd web && npm run test:e2e
 
-bin/pki-console: $(shell find console cmd/pki-console -type f -name '*.go') go.mod go.sum Makefile
+bin/pki-console: pki-console-web $(shell find console cmd/pki-console -type f -name '*.go') go.mod go.sum Makefile
 	@mkdir -p $(dir $@)
 ifneq ($(and $(TARGETOS),$(TARGETARCH)),)
 	CGO_ENABLED=0 GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) go build -trimpath -ldflags $(PKI_CONSOLE_LDFLAGS) -o $@ ./cmd/pki-console

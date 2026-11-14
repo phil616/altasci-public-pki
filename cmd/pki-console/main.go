@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +19,7 @@ import (
 	"github.com/cloudflare/cfssl/console/security"
 	"github.com/cloudflare/cfssl/console/store"
 	"github.com/cloudflare/cfssl/console/tsa"
+	webassets "github.com/cloudflare/cfssl/web"
 )
 
 var version = "dev"
@@ -59,11 +59,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 	data := store.New(pool)
-	access, err := security.NewAccessVerifier(cfg.AccessTeamDomain, cfg.AccessAudience, nil)
-	if err != nil {
-		return err
-	}
-	authService, err := auth.NewService(data, cfg, access)
+	authService, err := auth.NewService(data, cfg)
 	if err != nil {
 		return err
 	}
@@ -86,6 +82,9 @@ func run(logger *slog.Logger) error {
 	}
 	api, err := httpapi.New(cfg, data, authService, pkiService, tsaService, logger)
 	if err != nil {
+		return err
+	}
+	if err := api.MountFrontend(webassets.Files()); err != nil {
 		return err
 	}
 	httpapi.Version = version
@@ -132,10 +131,6 @@ func healthcheck(ctx context.Context, cfg consoleconfig.Config) error {
 		return err
 	}
 	req.Host = cfg.ConsoleHostname
-	if !cfg.DevelopmentInsecure {
-		req.Header.Set("X-PKI-Origin-Secret", hex.EncodeToString(cfg.OriginSharedSecret))
-		req.Header.Set("X-PKI-Forwarded-Host", cfg.ConsoleHostname)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

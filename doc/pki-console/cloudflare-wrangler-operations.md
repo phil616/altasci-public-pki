@@ -1,3 +1,7 @@
+> 历史文档：本文中的 Cloudflare / Pages / Access / Tunnel 部署步骤适用于旧版本。
+> 当前单体应用使用本地密码/TOTP、外部 PostgreSQL 和 Nginx，部署与迁移以
+> [production-deployment.md](production-deployment.md) 为准；Web 业务流程与数据库操作请结合当前版本核对。
+
 # Cloudflare 与 Wrangler 运维记录
 
 本文记录 PKI-Console 在 Cloudflare 上的实际资源、已经完成的操作、尚未完成的权限步骤，以及后续维护方法。敏感值不写入仓库。

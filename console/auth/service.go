@@ -1,4 +1,4 @@
-// Package auth implements local credentials, Cloudflare Access step-up, and
+// Package auth implements local password/TOTP credentials and
 // server-side session authentication.
 package auth
 
@@ -23,19 +23,16 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 type Service struct {
 	store  *store.Store
 	config consoleconfig.Config
-	access *security.AccessVerifier
 	now    func() time.Time
 	dummy  string
 }
 
 type LoginInput struct {
-	Login             string
-	Password          string
-	TOTP              string
-	AccessJWT         string
-	AccessEmailHeader string
-	IP                string
-	UserAgent         string
+	Login     string
+	Password  string
+	TOTP      string
+	IP        string
+	UserAgent string
 }
 
 type LoginResult struct {
@@ -44,24 +41,22 @@ type LoginResult struct {
 	Token     string
 	CSRFToken string
 	ExpiresAt time.Time
-	AccessSub string
 }
 
 type Principal struct {
 	User      store.User
 	SessionID string
-	AccessSub string
 }
 
-func NewService(s *store.Store, cfg consoleconfig.Config, verifier *security.AccessVerifier) (*Service, error) {
-	if s == nil || verifier == nil {
-		return nil, errors.New("auth store and Access verifier are required")
+func NewService(s *store.Store, cfg consoleconfig.Config) (*Service, error) {
+	if s == nil {
+		return nil, errors.New("auth store is required")
 	}
 	dummy, err := security.HashPassword("pki-console-dummy-password-value")
 	if err != nil {
 		return nil, err
 	}
-	return &Service{store: s, config: cfg, access: verifier, now: time.Now, dummy: dummy}, nil
+	return &Service{store: s, config: cfg, now: time.Now, dummy: dummy}, nil
 }
 
 // BootstrapRoot creates the single root account or synchronizes changed
@@ -85,6 +80,9 @@ func (s *Service) BootstrapRoot(ctx context.Context) (store.User, error) {
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
+	if len(input.Login) > 254 || len(input.Password) > 1024 || len(input.TOTP) > 6 {
+		return LoginResult{}, invalidCredentials("input_limits", nil)
+	}
 	now := s.now()
 	user, err := s.store.UserByLogin(ctx, strings.TrimSpace(input.Login))
 	if err != nil {
@@ -96,29 +94,16 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	}
 	passwordOK, verifyErr := security.VerifyPassword(input.Password, user.PasswordHash)
 	if verifyErr != nil || !passwordOK {
-		_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-		return LoginResult{}, invalidCredentials("password", verifyErr)
+		return LoginResult{}, invalidCredentials("password", errors.Join(verifyErr, s.store.RecordLoginFailure(ctx, user.ID, now)))
 	}
 
 	var totpStep int64
-	var accessSub string
 	if user.Role == "super_admin" {
-		identity, err := s.access.Verify(ctx, input.AccessJWT, input.AccessEmailHeader, s.config.RootUserEmail)
-		if err != nil {
-			_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-			return LoginResult{}, invalidCredentials("access", err)
-		}
-		accessSub = identity.Subject
 		totpStep, err = security.VerifyTOTP(s.config.RootUserTOTPSecret, input.TOTP, now, user.TOTPLastStep)
 		if err != nil {
-			_ = s.store.RecordLoginFailure(ctx, user.ID, now)
-			return LoginResult{}, invalidCredentials("totp", err)
+			return LoginResult{}, invalidCredentials("totp", errors.Join(err, s.store.RecordLoginFailure(ctx, user.ID, now)))
 		}
 	}
-	if err := s.store.AcceptLogin(ctx, user, totpStep, now); err != nil {
-		return LoginResult{}, invalidCredentials("accept", err)
-	}
-
 	token, tokenHash, err := security.NewToken()
 	if err != nil {
 		return LoginResult{}, err
@@ -131,12 +116,12 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	if user.Role == "super_admin" {
 		idle, absolute = s.config.RootSessionIdle, s.config.RootSessionMax
 	}
-	sessionID, err := s.store.CreateSession(ctx, user.ID, tokenHash, csrfHash, now.Add(idle), now.Add(absolute), input.IP, input.UserAgent)
+	sessionID, err := s.store.CreateAuthenticatedSession(ctx, user, totpStep, tokenHash, csrfHash, now.Add(idle), now.Add(absolute), now, input.IP, input.UserAgent)
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("create session: %w", err)
 	}
 	return LoginResult{User: user, SessionID: sessionID, Token: token, CSRFToken: csrfToken,
-		ExpiresAt: now.Add(absolute), AccessSub: accessSub}, nil
+		ExpiresAt: now.Add(absolute)}, nil
 }
 
 func invalidCredentials(stage string, cause error) error {
@@ -146,7 +131,7 @@ func invalidCredentials(stage string, cause error) error {
 	return fmt.Errorf("%w at %s", ErrInvalidCredentials, stage)
 }
 
-func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method, accessJWT, accessEmail string) (Principal, error) {
+func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method string) (Principal, error) {
 	if token == "" {
 		return Principal{}, ErrInvalidCredentials
 	}
@@ -162,13 +147,6 @@ func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method, ac
 		}
 	}
 	principal := Principal{User: session.User, SessionID: session.ID}
-	if session.User.Role == "super_admin" {
-		identity, err := s.access.Verify(ctx, accessJWT, accessEmail, s.config.RootUserEmail)
-		if err != nil {
-			return Principal{}, errors.New("Cloudflare Access verification failed")
-		}
-		principal.AccessSub = identity.Subject
-	}
 	idle := s.config.SessionIdle
 	if session.User.Role == "super_admin" {
 		idle = s.config.RootSessionIdle

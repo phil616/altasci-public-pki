@@ -3,6 +3,7 @@ package httpapi
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -40,7 +41,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.pki.GenerateCRL(r.Context(), ca.ID)
-	s.audit(r, "ca.root.create", "certificate_authority", &ca.ID, "success", map[string]string{"slug": ca.Slug})
+	_ = s.audit(r, "ca.root.create", "certificate_authority", &ca.ID, "success", map[string]string{"slug": ca.Slug})
 	writeJSON(w, http.StatusCreated, ca)
 }
 
@@ -55,7 +56,37 @@ func (s *Server) createIntermediate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = s.pki.GenerateCRL(r.Context(), ca.ID)
-	s.audit(r, "ca.intermediate.create", "certificate_authority", &ca.ID, "success", map[string]string{"slug": ca.Slug})
+	_ = s.audit(r, "ca.intermediate.create", "certificate_authority", &ca.ID, "success", map[string]string{"slug": ca.Slug})
+	writeJSON(w, http.StatusCreated, ca)
+}
+
+func (s *Server) importCA(w http.ResponseWriter, r *http.Request) {
+	if principal(r).User.Role != "super_admin" {
+		problem(w, http.StatusForbidden, "forbidden", "Only the super administrator may import CAs")
+		return
+	}
+	var input pki.ImportCAInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	ca, err := s.pki.ImportCA(r.Context(), principal(r).User, input)
+	if err != nil {
+		_ = s.audit(r, "ca.import", "certificate_authority", nil, "failure", map[string]string{"kind": input.Kind, "slug": input.Slug})
+		switch {
+		case errors.Is(err, pki.ErrInvalidCAImport):
+			problem(w, http.StatusUnprocessableEntity, "ca_import_invalid", err.Error())
+		case errors.Is(err, pki.ErrCAConflict):
+			problem(w, http.StatusConflict, "ca_conflict", err.Error())
+		default:
+			s.logger.Error("CA import failed", "request_id", requestID(r), "error", err)
+			problem(w, http.StatusInternalServerError, "ca_import_failed", "Unable to store imported CA")
+		}
+		return
+	}
+	if _, err := s.pki.GenerateCRL(r.Context(), ca.ID); err != nil {
+		s.logger.Error("generate imported CA CRL", "ca_id", ca.ID, "error", err)
+	}
+	_ = s.audit(r, "ca.import", "certificate_authority", &ca.ID, "success", map[string]string{"kind": ca.Kind, "slug": ca.Slug})
 	writeJSON(w, http.StatusCreated, ca)
 }
 
@@ -69,8 +100,8 @@ func (s *Server) exportCAKey(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.verifyRootStepUp(r, input.Password, input.TOTP); err != nil {
-		s.audit(r, "ca.key.export", "certificate_authority", &id, "denied", nil)
-		problem(w, http.StatusForbidden, "step_up_failed", "Fresh password, TOTP, and Cloudflare Access authentication are required")
+		_ = s.audit(r, "ca.key.export", "certificate_authority", &id, "denied", nil)
+		problem(w, http.StatusForbidden, "step_up_failed", "Fresh password and TOTP authentication are required")
 		return
 	}
 	key, err := s.pki.ExportCAKey(r.Context(), id)
@@ -82,7 +113,10 @@ func (s *Server) exportCAKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="ca-private-key.pem"`)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
-	s.audit(r, "ca.key.export", "certificate_authority", &id, "success", nil)
+	if err := s.audit(r, "ca.key.export", "certificate_authority", &id, "success", nil); err != nil {
+		problem(w, http.StatusServiceUnavailable, "audit_unavailable", "Audit storage is unavailable")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(key)
 }
@@ -97,7 +131,7 @@ func (s *Server) createCertificateRequest(w http.ResponseWriter, r *http.Request
 		problem(w, http.StatusUnprocessableEntity, "certificate_request_invalid", err.Error())
 		return
 	}
-	s.audit(r, "certificate_request.create", "certificate_request", &req.ID, "success", map[string]string{"ca_id": req.CAID})
+	_ = s.audit(r, "certificate_request.create", "certificate_request", &req.ID, "success", map[string]string{"ca_id": req.CAID})
 	writeJSON(w, http.StatusCreated, req)
 }
 
@@ -148,11 +182,11 @@ func (s *Server) decideCertificateRequest(w http.ResponseWriter, r *http.Request
 	}
 	id := r.PathValue("id")
 	if err := s.store.DecideRequest(r.Context(), id, principal(r).User, decision, input.Comment); err != nil {
-		s.audit(r, "certificate_request."+decision, "certificate_request", &id, "denied", nil)
+		_ = s.audit(r, "certificate_request."+decision, "certificate_request", &id, "denied", nil)
 		problem(w, http.StatusConflict, "request_decision_failed", err.Error())
 		return
 	}
-	s.audit(r, "certificate_request."+decision, "certificate_request", &id, "success", nil)
+	_ = s.audit(r, "certificate_request."+decision, "certificate_request", &id, "success", nil)
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "status": decision})
 }
 
@@ -227,11 +261,11 @@ func (s *Server) revokeCertificate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cert, err := s.pki.Revoke(r.Context(), principal(r).User, id, input.Reason, input.Comment)
 	if err != nil {
-		s.audit(r, "certificate.revoke", "certificate", &id, "denied", nil)
+		_ = s.audit(r, "certificate.revoke", "certificate", &id, "denied", nil)
 		problem(w, http.StatusUnprocessableEntity, "revocation_failed", err.Error())
 		return
 	}
-	s.audit(r, "certificate.revoke", "certificate", &id, "success", map[string]int{"reason": input.Reason})
+	_ = s.audit(r, "certificate.revoke", "certificate", &id, "success", map[string]int{"reason": input.Reason})
 	writeJSON(w, http.StatusOK, certificateResponse(cert))
 }
 
@@ -251,7 +285,7 @@ func (s *Server) downloadPrivateKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", `attachment; filename="private-key.pem"`)
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	s.audit(r, "certificate.private_key.download", "certificate", &id, "success", nil)
+	_ = s.audit(r, "certificate.private_key.download", "certificate", &id, "success", nil)
 	_, _ = w.Write(key)
 }
 

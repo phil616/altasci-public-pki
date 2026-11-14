@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -40,7 +44,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("PKI_TEST_DATABASE_URL is not set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if err := store.Migrate(ctx, databaseURL); err != nil {
 		t.Fatal(err)
@@ -88,15 +92,11 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	cfg := consoleconfig.Config{DatabaseURL: databaseURL, PublicBaseURL: publicURL, ConsoleBaseURL: consoleURL,
 		PublicHostname: publicURL.Hostname(), ConsoleHostname: consoleURL.Hostname(),
 		RootUserEmail: "root@example.test", RootUserPassword: "0123456789abcdefghijklmnopqrstuvwxyz",
-		RootUserTOTPSecret: bytes.Repeat([]byte{1}, 20), AccessTeamDomain: "https://example.cloudflareaccess.com",
-		AccessAudience: "test-audience", MasterKeyActiveID: "v1", MasterKeys: map[string][]byte{"v1": bytes.Repeat([]byte{2}, 32)},
+		RootUserTOTPSecret: bytes.Repeat([]byte{1}, 20),
+		MasterKeyActiveID:  "v1", MasterKeys: map[string][]byte{"v1": bytes.Repeat([]byte{2}, 32)},
 		SessionIdle: time.Hour, SessionMax: 8 * time.Hour, RootSessionIdle: 15 * time.Minute,
 		RootSessionMax: time.Hour, TSAMaxClockUncertainty: 5 * time.Second, DevelopmentInsecure: true}
-	access, err := security.NewAccessVerifier(cfg.AccessTeamDomain, cfg.AccessAudience, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authService, err := auth.NewService(data, cfg, access)
+	authService, err := auth.NewService(data, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +114,17 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := api.Handler()
+	// Exercise the production authentication path without any gateway headers.
+	productionConfig := cfg
+	productionConfig.DevelopmentInsecure = false
+	productionAPI, err := New(productionConfig, data, authService, pkiService, tsaService,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("standalone root authentication", func(t *testing.T) {
+		testStandaloneRootAuth(t, productionAPI.Handler(), cfg)
+	})
 	rootCA, err := pkiService.CreateRoot(ctx, root, pki.CreateCAInput{Name: "Test Root", Slug: "test-root",
 		Subject: pki.Subject{CommonName: "Test Root CA", Organization: "Example"}, PathLength: 1})
 	if err != nil {
@@ -368,5 +379,72 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	handler.ServeHTTP(unknownRecorder, unknown)
 	if unknownRecorder.Code != http.StatusMisdirectedRequest {
 		t.Fatalf("unknown host status=%d", unknownRecorder.Code)
+	}
+	t.Run("CA import HTTP contract", func(t *testing.T) {
+		testHTTPCAImport(t, handler, cfg, data, root, user)
+	})
+}
+
+// testStandaloneRootAuth checks password/TOTP, replay rejection, secure cookies,
+// session authentication, CSRF and credential step-up through the real API.
+func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfig.Config) {
+	t.Helper()
+	login := func(password, code string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"login": cfg.RootUserEmail, "password": password, "totp": code})
+		r := httptest.NewRequest("POST", "https://"+cfg.ConsoleHostname+"/api/v1/auth/login", bytes.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:1234"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	if w := login(cfg.RootUserPassword, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("root login without TOTP: %d %s", w.Code, w.Body.String())
+	}
+	var counter [8]byte
+	binary.BigEndian.PutUint64(counter[:], uint64(time.Now().Unix()/30))
+	mac := hmac.New(sha256.New, cfg.RootUserTOTPSecret)
+	_, _ = mac.Write(counter[:])
+	digest := mac.Sum(nil)
+	offset := digest[len(digest)-1] & 0x0f
+	code := fmt.Sprintf("%06d", (binary.BigEndian.Uint32(digest[offset:offset+4])&0x7fffffff)%1_000_000)
+	if w := login("wrong-password", code); w.Code != http.StatusUnauthorized {
+		t.Fatalf("root login with wrong password: %d", w.Code)
+	}
+	w := login(cfg.RootUserPassword, code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("standalone root login: %d %s", w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != auth.CookieName || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("invalid production session cookie: %v", cookies)
+	}
+	var result struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.CSRFToken == "" {
+		t.Fatalf("invalid login response: %s", w.Body.String())
+	}
+	if replay := login(cfg.RootUserPassword, code); replay.Code != http.StatusUnauthorized {
+		t.Fatalf("TOTP replay accepted: %d", replay.Code)
+	}
+	for _, tc := range []struct {
+		method, path, csrf, body string
+		status                   int
+	}{
+		{"GET", "/api/v1/auth/session", "", "", 200},
+		{"GET", "/api/v1/users", "", "", 200},
+		{"POST", "/api/v1/auth/logout", "", "", 401},
+		{"POST", "/api/v1/cas/nonexistent/keys/export", result.CSRFToken, `{"password":"` + cfg.RootUserPassword + `","totp":"` + code + `"}`, 403},
+		{"POST", "/api/v1/auth/logout", result.CSRFToken, "", 204},
+		{"GET", "/api/v1/auth/session", "", "", 401},
+	} {
+		r := httptest.NewRequest(tc.method, "https://"+cfg.ConsoleHostname+tc.path, strings.NewReader(tc.body))
+		r.AddCookie(cookies[0])
+		r.Header.Set("X-CSRF-Token", tc.csrf)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, r)
+		if recorder.Code != tc.status {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, recorder.Code, recorder.Body.String())
+		}
 	}
 }

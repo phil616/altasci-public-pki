@@ -32,6 +32,15 @@ type profileInput struct {
 	Enabled                bool            `json:"enabled"`
 }
 
+func (input profileInput) validateSeconds() error {
+	const maximum = int64(397 * 24 * 60 * 60)
+	if input.DefaultValiditySeconds <= 0 || input.DefaultValiditySeconds > maximum ||
+		input.MaxValiditySeconds < input.DefaultValiditySeconds || input.MaxValiditySeconds > maximum {
+		return errors.New("validity must be between one second and 397 days")
+	}
+	return nil
+}
+
 func (input profileInput) profile(caID, id string) store.SigningProfile {
 	return store.SigningProfile{ID: id, CAID: caID, Name: strings.TrimSpace(input.Name),
 		Description:     strings.TrimSpace(input.Description),
@@ -98,6 +107,10 @@ func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	if err := input.validateSeconds(); err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_signing_profile", err.Error())
+		return
+	}
 	profile := input.profile(r.PathValue("id"), "")
 	if err := validateProfile(profile); err != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_signing_profile", err.Error())
@@ -108,7 +121,7 @@ func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "profile_creation_failed", "Unable to create signing profile")
 		return
 	}
-	s.audit(r, "signing_profile.create", "signing_profile", &created.ID, "success", nil)
+	_ = s.audit(r, "signing_profile.create", "signing_profile", &created.ID, "success", nil)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -121,6 +134,10 @@ func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	if err := input.validateSeconds(); err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_signing_profile", err.Error())
+		return
+	}
 	profile := input.profile(r.PathValue("id"), r.PathValue("profileID"))
 	if err := validateProfile(profile); err != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_signing_profile", err.Error())
@@ -131,7 +148,7 @@ func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "profile_not_found", "Signing profile was not found")
 		return
 	}
-	s.audit(r, "signing_profile.update", "signing_profile", &updated.ID, "success", nil)
+	_ = s.audit(r, "signing_profile.update", "signing_profile", &updated.ID, "success", nil)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -145,7 +162,7 @@ func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusConflict, "profile_delete_failed", "Default or referenced profiles cannot be deleted")
 		return
 	}
-	s.audit(r, "signing_profile.delete", "signing_profile", &id, "success", nil)
+	_ = s.audit(r, "signing_profile.delete", "signing_profile", &id, "success", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -177,9 +194,9 @@ func (s *Server) generateCSR(w http.ResponseWriter, r *http.Request) {
 	if keyRequest.A == "" {
 		keyRequest.A, keyRequest.S = "rsa", 3072
 	}
-	if (keyRequest.A != "rsa" || keyRequest.S < 3072) &&
+	if (keyRequest.A != "rsa" || (keyRequest.S != 3072 && keyRequest.S != 4096)) &&
 		(keyRequest.A != "ecdsa" || (keyRequest.S != 256 && keyRequest.S != 384)) {
-		problem(w, http.StatusUnprocessableEntity, "invalid_key_parameters", "Use RSA with at least 3072 bits or ECDSA P-256/P-384")
+		problem(w, http.StatusUnprocessableEntity, "invalid_key_parameters", "Use RSA-3072/4096 or ECDSA P-256/P-384")
 		return
 	}
 	request := &csr.CertificateRequest{CN: input.Subject.CommonName, Hosts: input.SANs,
@@ -191,7 +208,7 @@ func (s *Server) generateCSR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	s.audit(r, "utility.csr.generate", "utility", nil, "success", map[string]any{"algorithm": keyRequest.A, "size": keyRequest.S})
+	_ = s.audit(r, "utility.csr.generate", "utility", nil, "success", map[string]any{"algorithm": keyRequest.A, "size": keyRequest.S})
 	writeJSON(w, http.StatusOK, map[string]string{"csr_pem": string(csrPEM), "private_key_pem": string(keyPEM)})
 }
 
@@ -217,7 +234,7 @@ func (s *Server) bundleCertificates(w http.ResponseWriter, r *http.Request) {
 	if input.RootsPEM != "" {
 		roots = []byte(input.RootsPEM)
 	}
-	b, err := bundler.NewBundlerFromPEM(roots, []byte(input.IntermediatesPEM))
+	b, err := bundler.NewBundlerFromPEM(roots, []byte(input.IntermediatesPEM), bundler.WithoutAIAFetching())
 	if err != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_bundle_roots", err.Error())
 		return
@@ -227,6 +244,6 @@ func (s *Server) bundleCertificates(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "bundle_failed", err.Error())
 		return
 	}
-	s.audit(r, "utility.bundle", "utility", nil, "success", map[string]string{"flavor": string(flavor)})
+	_ = s.audit(r, "utility.bundle", "utility", nil, "success", map[string]string{"flavor": string(flavor)})
 	writeJSON(w, http.StatusOK, bundle)
 }

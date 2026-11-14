@@ -1,0 +1,2 @@
+Frontend assets are generated in dist/ by npm run build and embedded by Go.
+Build the complete application with make pki-console.

@@ -1,27 +1,26 @@
 # PKI-Console / CFSSL fork
 
-This fork adds the PKI-Console enterprise control plane under
-`cmd/pki-console` and `console/`, plus its React application under `web/`. Start with
-[`doc/pki-console/README.md`](doc/pki-console/README.md) for its architecture,
-security configuration, native Go binary and Cloudflare Pages/Functions deployment,
-PostgreSQL configuration, and OpenAPI contract. The original CFSSL tools and
-package documentation continue below.
+This fork adds the PKI-Console enterprise control plane under `cmd/pki-console`
+and `console/`, with its React UI under `web/`. The application is distributed as
+one Go binary containing the frontend, API, local password/TOTP authentication,
+and issuance worker. Nginx provides the reverse proxy and HTTPS; externally
+managed PostgreSQL 18+ provides persistence. No Cloudflare service is required.
 
-The step-by-step production runbook is
-[`doc/pki-console/production-deployment.md`](doc/pki-console/production-deployment.md).
-The GitHub tag release and Cloudflare Wrangler workflow is documented in
-[`doc/pki-console/github-actions-release.md`](doc/pki-console/github-actions-release.md).
-Production operations, monitoring, backup/restore, key rotation and incident
-response are documented in
-[`doc/pki-console/operations-runbook.md`](doc/pki-console/operations-runbook.md).
-Reusable operational record forms are in
-[`doc/pki-console/operations-record-templates.md`](doc/pki-console/operations-record-templates.md).
-The detailed Web tutorial for establishing the enterprise CA hierarchy and
-signing profiles is
-[`doc/pki-console/enterprise-pki-web-setup.md`](doc/pki-console/enterprise-pki-web-setup.md).
-The live Cloudflare resource inventory is in
-[`doc/pki-console/cloudflare-wrangler-operations.md`](doc/pki-console/cloudflare-wrangler-operations.md),
-and resolved incidents are kept beside these runbooks.
+```sh
+make pki-console
+# Load the environment described in .env.example, then:
+./bin/pki-console migrate
+./bin/pki-console serve
+```
+
+Start with [the application guide](doc/pki-console/README.md) and
+[production deployment and migration](doc/pki-console/production-deployment.md).
+A complete [Nginx example](doc/pki-console/nginx.conf.example) and
+[systemd unit](doc/pki-console/pki-console.service) are included.
+The [OpenAPI contract](doc/pki-console/openapi.yaml) and
+[desktop client guide](doc/pki-console/desktop-client-integration.md) describe
+local session authentication. Earlier Cloudflare deployment and incident
+records are retained as historical documentation.
 
 # CFSSL
 

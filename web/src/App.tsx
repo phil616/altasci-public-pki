@@ -25,6 +25,9 @@ const UsersPage = lazy(() => import('@/pages/UsersPage').then((module) => ({ def
 const UtilitiesPage = lazy(() => import('@/pages/UtilitiesPage').then((module) => ({ default: module.UtilitiesPage })));
 
 function isPublicSurface(): boolean {
+  const surface = document.querySelector<HTMLMetaElement>('meta[name="pki-surface"]')?.content;
+  if (surface === 'public') return true;
+  if (surface === 'console') return false;
   const override = import.meta.env.VITE_PKI_SURFACE;
   if (override === 'public') return true;
   if (override === 'console') return false;

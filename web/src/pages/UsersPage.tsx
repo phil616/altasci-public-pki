@@ -67,7 +67,7 @@ export function UsersPage() {
       <Modal title="创建用户" open={createOpen} onCancel={() => setCreateOpen(false)} onOk={() => createForm.submit()} confirmLoading={create.isPending} okText="创建" cancelText="取消" destroyOnHidden>
         <Form form={createForm} layout="vertical" onFinish={(values) => create.mutate(values)} initialValues={{ role: 'user' }} requiredMark={false}>
           <Form.Item name="username" label="用户名" tooltip="本地登录标识，建议使用稳定且能明确对应到个人的名称。" extra="长度为 3–128 个字符，创建后用于登录和审计归属。" rules={[{ required: true }, { min: 3, max: 128 }]}><Input autoComplete="off" /></Form.Item>
-          <Form.Item name="email" label="邮箱（可选）" tooltip="用于展示和联系，不参与普通用户或运维人员的 Cloudflare Access 校验。" rules={[{ type: 'email' }]}><Input autoComplete="off" /></Form.Item>
+          <Form.Item name="email" label="邮箱（可选）" tooltip="用于展示、联系和账户登录。" rules={[{ type: 'email' }]}><Input autoComplete="off" /></Form.Item>
           <Form.Item name="role" label="角色" tooltip="运维人员可在获得 CA 级授权后审批或操作申请；普通用户只能提交申请并访问自己的证书。" rules={[{ required: true }]}><Select options={[{ value: 'operator', label: '运维人员' }, { value: 'user', label: '普通用户' }]} /></Form.Item>
           <Form.Item name="password" label="初始密码" extra="15–128 个字符，建议使用密码管理器生成。" rules={[{ required: true }, { min: 15, max: 128 }]}><Input.Password autoComplete="new-password" /></Form.Item>
         </Form>

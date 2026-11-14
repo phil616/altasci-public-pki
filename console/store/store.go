@@ -74,32 +74,45 @@ func (s *Store) CreateUser(ctx context.Context, username string, email *string, 
 func (s *Store) RecordLoginFailure(ctx context.Context, userID string, now time.Time) error {
 	_, err := s.pool.Exec(ctx, `UPDATE users SET
         failed_login_count=failed_login_count+1,
-        locked_until=CASE WHEN failed_login_count+1 >= 5 THEN $2 + interval '15 minutes' ELSE locked_until END,
+        locked_until=CASE WHEN failed_login_count+1 >= 5 THEN $2::timestamptz + interval '15 minutes' ELSE locked_until END,
         status=CASE WHEN failed_login_count+1 >= 5 THEN 'locked' ELSE status END,
-        updated_at=$2 WHERE id=$1`, userID, now)
+        updated_at=$2 WHERE id=$1 AND status<>'disabled'`, userID, now)
 	return err
 }
 
-// AcceptLogin atomically prevents TOTP replay for root and clears transient
-// account locks after a successful credential check.
-func (s *Store) AcceptLogin(ctx context.Context, user User, totpStep int64, now time.Time) error {
-	command, err := s.pool.Exec(ctx, `UPDATE users SET
-        root_totp_last_step=CASE WHEN role='super_admin' THEN $2 ELSE root_totp_last_step END,
-        failed_login_count=0,locked_until=NULL,status='active',last_login_at=$3,updated_at=$3
-        WHERE id=$1 AND status<>'disabled'
-          AND (role<>'super_admin' OR root_totp_last_step < $2)`, user.ID, totpStep, now)
+// CreateAuthenticatedSession rechecks the verified credential snapshot while
+// holding the account row lock. Password resets, disables and TOTP consumption
+// cannot race between credential verification and session creation.
+func (s *Store) CreateAuthenticatedSession(ctx context.Context, user User, totpStep int64, tokenHash, csrfHash []byte, idle, absolute, now time.Time, ip, userAgent string) (string, error) {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if command.RowsAffected() != 1 {
-		return errors.New("login was rejected or TOTP code was replayed")
+	defer tx.Rollback(ctx)
+	var id string
+	err = tx.QueryRow(ctx, `UPDATE users SET
+        root_totp_last_step=CASE WHEN role='super_admin' THEN $3 ELSE root_totp_last_step END,
+        failed_login_count=0,locked_until=NULL,status='active',last_login_at=$4,updated_at=$4
+        WHERE id=$1 AND password_hash=$2 AND role=$5 AND status<>'disabled'
+          AND (locked_until IS NULL OR locked_until<=$4)
+          AND (role<>'super_admin' OR root_totp_last_step<$3)
+        RETURNING id::text`, user.ID, user.PasswordHash, totpStep, now, user.Role).Scan(&id)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	err = tx.QueryRow(ctx, `INSERT INTO sessions
+        (user_id,token_hash,csrf_hash,idle_expires_at,absolute_expires_at,ip,user_agent)
+        VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::inet,$7) RETURNING id::text`,
+		user.ID, tokenHash, csrfHash, idle, absolute, ip, userAgent).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit(ctx)
 }
 
-func (s *Store) AcceptRootStepUp(ctx context.Context, userID string, totpStep int64) error {
+func (s *Store) AcceptRootStepUp(ctx context.Context, userID, passwordHash string, totpStep int64) error {
 	command, err := s.pool.Exec(ctx, `UPDATE users SET root_totp_last_step=$2,updated_at=now()
-        WHERE id=$1 AND role='super_admin' AND status='active' AND root_totp_last_step<$2`, userID, totpStep)
+        WHERE id=$1 AND role='super_admin' AND status='active' AND root_totp_last_step<$2 AND password_hash=$3`, userID, totpStep, passwordHash)
 	if err != nil {
 		return err
 	}
@@ -124,7 +137,8 @@ func (s *Store) SessionByToken(ctx context.Context, tokenHash []byte, now time.T
         s.idle_expires_at,s.absolute_expires_at,`+userColumnsWithAlias("u")+`
         FROM sessions s JOIN users u ON u.id=s.user_id
         WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.idle_expires_at>$2
-          AND s.absolute_expires_at>$2 AND u.status='active'`, tokenHash, now)
+          AND s.absolute_expires_at>$2 AND u.status='active'
+          AND s.created_at>=u.password_changed_at`, tokenHash, now)
 	err := row.Scan(&session.ID, &session.CSRFHash, &session.CreatedAt, &session.LastSeenAt,
 		&session.IdleExpiresAt, &session.AbsoluteExpiresAt,
 		&session.User.ID, &session.User.Username, &session.User.Email, &session.User.Role,
@@ -230,7 +244,12 @@ func (s *Store) SetUserStatus(ctx context.Context, userID, status string) error 
 	if status != "active" && status != "disabled" {
 		return errors.New("status must be active or disabled")
 	}
-	command, err := s.pool.Exec(ctx, `UPDATE users SET status=$2,failed_login_count=0,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	command, err := tx.Exec(ctx, `UPDATE users SET status=$2,failed_login_count=0,
         locked_until=NULL,updated_at=now(),version=version+1 WHERE id=$1 AND role<>'super_admin'`, userID, status)
 	if err != nil {
 		return err
@@ -239,9 +258,11 @@ func (s *Store) SetUserStatus(ctx context.Context, userID, status string) error 
 		return ErrNotFound
 	}
 	if status == "disabled" {
-		_, _ = s.pool.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, userID)
+		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, userID); err != nil {
+			return err
+		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ResetUserPassword(ctx context.Context, userID, passwordHash string) error {

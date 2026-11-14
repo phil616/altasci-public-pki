@@ -32,7 +32,7 @@ func (s *Server) createTimestampAuthority(w http.ResponseWriter, r *http.Request
 		problem(w, http.StatusUnprocessableEntity, "timestamp_authority_creation_failed", err.Error())
 		return
 	}
-	s.audit(r, "tsa.create", "timestamp_authority", &authority.ID, "success",
+	_ = s.audit(r, "tsa.create", "timestamp_authority", &authority.ID, "success",
 		map[string]string{"slug": authority.Slug, "policy_oid": authority.PolicyOID, "ca_id": authority.CAID})
 	writeJSON(w, http.StatusCreated, authority)
 }

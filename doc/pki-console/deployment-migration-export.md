@@ -1,3 +1,7 @@
+> 历史文档：本文中的 Cloudflare / Pages / Access / Tunnel 部署步骤适用于旧版本。
+> 当前单体应用使用本地密码/TOTP、外部 PostgreSQL 和 Nginx，部署与迁移以
+> [production-deployment.md](production-deployment.md) 为准；Web 业务流程与数据库操作请结合当前版本核对。
+
 # PKI-Console 部署、迁移与数据导出手册
 
 本文面向接手项目的运维人员，覆盖首次部署、从 systemd 切换到 Docker、跨主机迁移、数据库备份恢复和业务数据导出。按 2026-10-09 工作区源码核对；示例尚未在生产环境执行。所有域名、版本标签、文件路径和数据库账户应替换为实际值。

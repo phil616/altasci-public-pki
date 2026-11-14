@@ -63,6 +63,7 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil || len(want) < 16 || len(want) > 64 {
 		return false, errors.New("invalid password digest")
 	}
+	// #nosec G115 -- len(want) is validated to be between 16 and 64 above.
 	got := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

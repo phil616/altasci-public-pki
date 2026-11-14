@@ -1,3 +1,7 @@
+> 历史文档：本文中的 Cloudflare / Pages / Access / Tunnel 部署步骤适用于旧版本。
+> 当前单体应用使用本地密码/TOTP、外部 PostgreSQL 和 Nginx，部署与迁移以
+> [production-deployment.md](production-deployment.md) 为准；Web 业务流程与数据库操作请结合当前版本核对。
+
 # PKI-Console 生产运维 Runbook
 
 本文是 `pki.altasci.com`、`pki-console.altasci.com` 和 LD-S2 生产实例的日常运维、

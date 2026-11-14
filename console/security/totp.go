@@ -38,6 +38,9 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastAccepted int64) (
 }
 
 func totpCode(secret []byte, counter int64) string {
+	if counter < 0 {
+		return ""
+	}
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], uint64(counter))
 	mac := hmac.New(sha256.New, secret)

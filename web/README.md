@@ -3,8 +3,12 @@
 The web application is a React 19 single-page application shared by the two
 PKI-Console hostnames:
 
-- `pki-console.altasci.com` selects the authenticated management Console.
-- `pki.altasci.com` selects the public CA, CRL and exact certificate lookup UI.
+- `CONSOLE_BASE_URL` selects the authenticated management Console.
+- `PUBLIC_BASE_URL` selects the public CA, CRL and exact certificate lookup UI.
+
+`make pki-console` builds this app and embeds `web/dist` into the Go binary.
+Production needs no Node.js or separate frontend hosting. The Go server injects
+the surface into an HTML meta tag for each configured hostname.
 
 The build uses TypeScript, Vite, React Router, TanStack Query and Ant Design.
 It talks only to same-origin paths, sends the HTTP-only session cookie with
@@ -24,5 +28,4 @@ boundary, so it does not need PostgreSQL; use the repository integration-test
 instructions to validate the real API and database lifecycle.
 
 Use `VITE_PKI_SURFACE=console` or `VITE_PKI_SURFACE=public` only when a preview
-hostname cannot identify the surface automatically. Production deployments on
-the documented hostnames do not need this override.
+hostname cannot identify the surface automatically. Production always uses the surface selected by the Go server.

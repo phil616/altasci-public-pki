@@ -14,7 +14,7 @@ import {
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Drawer, Dropdown, Flex, Grid, Layout, Menu, Space, Typography } from 'antd';
+import { App as AntApp, Avatar, Button, Drawer, Dropdown, Flex, Grid, Layout, Menu, Space, Typography } from 'antd';
 import { useMemo, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
@@ -29,6 +29,7 @@ const { Text } = Typography;
 interface NavItem { key: string; label: string; icon: ReactNode; visible?: boolean }
 
 export function ConsoleLayout() {
+  const { message } = AntApp.useApp();
   const { user, logout } = useAuth();
   const { mode, toggle } = useColorMode();
   const navigate = useNavigate();
@@ -91,7 +92,7 @@ export function ConsoleLayout() {
               <Dropdown trigger={['click']} placement="bottomRight" menu={{ items: [
                 { key: 'identity', label: user?.email ?? user?.username, icon: <UserOutlined />, disabled: true },
                 { type: 'divider' },
-                { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true, onClick: () => void logout().then(() => navigate('/login')) },
+                { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true, onClick: () => void logout().then(() => navigate('/login')).catch((error: unknown) => message.error(error instanceof Error ? error.message : '退出未完成，请重试')) },
               ] }}>
                 <Button type="text" className="identity-button">
                   <Avatar size={26} icon={<UserOutlined />} />

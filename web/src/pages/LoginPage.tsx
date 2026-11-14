@@ -43,8 +43,8 @@ export function LoginPage() {
           <Paragraph>基于 CFSSL 源码构建的企业级证书控制平面，覆盖 CA 生命周期、审批、吊销、OCSP 与审计链。</Paragraph>
         </div>
         <div className="security-strip">
-          <div><SafetyOutlined /><span><strong>可信入口</strong><small>受到Cloudflare的Access保护</small></span></div>
-          <div><CloudServerOutlined /><span><strong>ZTA安全</strong><small>未经授权不得访问PKI设施</small></span></div>
+          <div><SafetyOutlined /><span><strong>本地认证</strong><small>密码与超级管理员动态验证码</small></span></div>
+          <div><CloudServerOutlined /><span><strong>权限控制</strong><small>未经授权不得访问PKI设施</small></span></div>
         </div>
       </section>
       <section className="login-panel">
@@ -68,7 +68,7 @@ export function LoginPage() {
                 <Form.Item label="六位动态验证码" name="totp" rules={[{ required: true, pattern: /^\d{6}$/, message: '请输入六位 TOTP 验证码' }]}>
                   <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} prefix={<SafetyOutlined />} placeholder="000000" />
                 </Form.Item>
-                <Alert type="info" showIcon title="Cloudflare Access 验证由接入层注入，邮箱必须与根账户一致。" />
+                <Alert type="info" showIcon title="使用本地超级管理员密码和 TOTP 动态验证码登录（SHA-256，6 位，30 秒）。" />
               </>
             ) : null}
             <Button block type="primary" htmlType="submit" loading={submitting}>安全登录</Button>

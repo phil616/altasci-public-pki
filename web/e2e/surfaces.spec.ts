@@ -136,3 +136,78 @@ test('blocks ordinary users from privileged workspaces', async ({ page }) => {
   await page.goto('/audit');
   await expect(page.getByText('无权访问', { exact: true })).toBeVisible();
 });
+
+for (const kind of ['root', 'intermediate'] as const) {
+  test(`imports an existing ${kind} CA from PEM`, async ({ page }) => {
+    await mockConsole(page);
+    const parent = {
+      id: 'existing-root-id', name: 'Existing Root', slug: 'existing-root', kind: 'root', status: 'active',
+      subject: { common_name: 'Existing Root' }, path_length: -1,
+      not_before: '2026-01-01T00:00:00Z', not_after: '2036-01-01T00:00:00Z',
+    };
+    const authorities: object[] = kind === 'intermediate' ? [parent] : [];
+    await page.unroute('**/api/v1/cas');
+    await page.route('**/api/v1/cas', (route) => route.fulfill({ json: { items: authorities } }));
+    const certificate = '-----BEGIN CERTIFICATE-----\nexisting-certificate\n-----END CERTIFICATE-----';
+    const privateKey = '-----BEGIN PRIVATE KEY-----\nexisting-private-key\n-----END PRIVATE KEY-----';
+    let submissions = 0;
+    await page.route('**/api/v1/cas/import', async (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      expect(body).toMatchObject({ kind, name: `Imported ${kind}`, slug: `imported-${kind}`, certificate_pem: certificate, private_key_pem: privateKey });
+      expect(body.parent_ca_id).toBe(kind === 'intermediate' ? parent.id : undefined);
+      expect(route.request().headers()['x-csrf-token']).toBe('test-csrf-token');
+      expect(route.request().headers()['idempotency-key']).toBeTruthy();
+      submissions++;
+      const ca = { ...parent, id: `imported-${kind}`, name: `Imported ${kind}`, slug: `imported-${kind}`, kind, parent_ca_id: kind === 'intermediate' ? parent.id : undefined };
+      authorities.push(ca);
+      await route.fulfill({ status: 201, json: ca });
+    });
+    await page.goto('/authorities');
+    await page.getByRole('button', { name: '导入 CA', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '导入证书机构' });
+    const kindLabel = kind === 'root' ? '根 CA' : '中间 CA';
+    await dialog.getByText(kindLabel, { exact: true }).click();
+    await expect(dialog.getByRole('radio', { name: kindLabel, exact: true })).toBeChecked();
+    if (kind === 'intermediate') {
+      await dialog.getByLabel('上级 CA', { exact: true }).click();
+      await page.getByText('Existing Root (existing-root)', { exact: true }).click();
+    }
+    await dialog.getByLabel('显示名称', { exact: true }).fill(`Imported ${kind}`);
+    await dialog.getByLabel('公开标识', { exact: true }).fill(`imported-${kind}`);
+    if (kind === 'root') {
+      const certChooser = page.waitForEvent('filechooser');
+      await dialog.getByRole('button', { name: '选择证书文件' }).click();
+      await (await certChooser).setFiles({ name: 'root.pem', mimeType: 'application/x-pem-file', buffer: Buffer.from(certificate) });
+      const keyChooser = page.waitForEvent('filechooser');
+      await dialog.getByRole('button', { name: '选择私钥文件' }).click();
+      await (await keyChooser).setFiles({ name: 'root.key', mimeType: 'application/x-pem-file', buffer: Buffer.from(privateKey) });
+    } else {
+      await dialog.getByLabel('CA 证书（PEM）', { exact: true }).fill(certificate);
+      await dialog.getByLabel('CA 私钥（PEM）', { exact: true }).fill(privateKey);
+    }
+    await dialog.getByRole('button', { name: '验证并导入' }).click();
+    await expect(page.getByText('证书机构导入完成', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Imported ${kind}`, exact: true })).toBeVisible();
+    expect(submissions).toBe(1);
+    await page.getByRole('button', { name: '导入 CA', exact: true }).click();
+    await expect(dialog.getByLabel('CA 私钥（PEM）', { exact: true })).toHaveValue('');
+  });
+}
+
+test('does not offer CA import to an ordinary user', async ({ page }) => {
+  await mockConsole(page, { ...rootUser, username: 'requester', role: 'user' });
+  await page.goto('/authorities');
+  await expect(page.getByRole('heading', { name: '证书机构', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '导入 CA', exact: true })).toHaveCount(0);
+});
+
+test('keeps the session visible when server logout fails', async ({ page }) => {
+  await mockConsole(page);
+  await page.route('**/api/v1/auth/logout', (route) => route.fulfill({ status: 503, json: { status: 503, code: 'audit_unavailable', detail: '退出未完成，请重试' } }));
+  await page.goto('/');
+  await page.locator('.identity-button').click();
+  await page.getByRole('menuitem', { name: /退出登录/ }).click();
+  await expect(page.getByText('退出未完成，请重试', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '欢迎回来，root@example.com' })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('pki-console.csrf'))).toBe('test-csrf-token');
+});

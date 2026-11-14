@@ -130,6 +130,15 @@ export interface CreateCAInput {
   subject: Subject;
 }
 
+export interface ImportCAInput {
+  name: string;
+  slug: string;
+  kind: 'root' | 'intermediate';
+  parent_ca_id?: string;
+  certificate_pem: string;
+  private_key_pem: string;
+}
+
 export interface SigningProfileInput {
   name: string;
   description: string;
@@ -187,6 +196,8 @@ export const consoleAPI = {
     request<CertificateAuthority>(`${consoleBase}/cas/roots`, { method: 'POST', body: input, idempotent: true }),
   createIntermediate: (input: CreateCAInput) =>
     request<CertificateAuthority>(`${consoleBase}/cas/intermediates`, { method: 'POST', body: input, idempotent: true }),
+  importCA: (input: ImportCAInput) =>
+    request<CertificateAuthority>(`${consoleBase}/cas/import`, { method: 'POST', body: input, idempotent: true }),
   exportCAKey: (id: string, password: string, totp: string) =>
     download(`${consoleBase}/cas/${id}/keys/export`, `${id}-ca-private-key.pem`, 'POST', { password, totp }),
   profiles: (caID: string) => requestList<SigningProfile>(`${consoleBase}/cas/${caID}/profiles`),
