@@ -17,6 +17,7 @@
 | 文档信息 | 必须核对的源码或配置 |
 | --- | --- |
 | 工具链、依赖与构建命令 | [go.mod](../../go.mod)、[package.json](../../web/package.json)、锁文件、[Makefile](../../Makefile) |
+| PR 检查、版本触发与发布附件 | [工作流](../../.github/workflows/pki-console.yml)、[打包脚本](../../.github/scripts/build-release.sh)、[发布脚本](../../.github/scripts/publish-release.sh) |
 | 环境变量、默认值与约束 | [config.go](../../console/config/config.go)、[.env.example](../../.env.example) |
 | 路由、认证、幂等与错误 | [server.go](../../console/httpapi/server.go)、同目录 handlers、[auth](../../console/auth/service.go) |
 | JSON 返回字段 | [models.go](../../console/store/models.go) 和处理函数中的响应构造 |
