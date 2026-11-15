@@ -26,7 +26,7 @@ func (s *Server) MountFrontend(assets fs.FS) error {
 
 func serveSurface(w http.ResponseWriter, r *http.Request, api *http.ServeMux, frontend http.Handler) {
 	name := strings.TrimPrefix(r.URL.Path, "/")
-	for _, prefix := range []string{"api", "pki", "issuers", "crl", "ocsp", "tsa", "health"} {
+	for _, prefix := range []string{"api", "pki", "issuers", "crl", "ocsp", "tsa", "health", "signing"} {
 		if name == prefix || strings.HasPrefix(name, prefix+"/") {
 			api.ServeHTTP(w, r)
 			return

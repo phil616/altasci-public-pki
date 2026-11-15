@@ -30,6 +30,7 @@ Nginx 示例见 [nginx.conf.example](nginx.conf.example)，systemd 单元见
 | 业务配置、授权与签发 | [业务指南](enterprise-pki-web-setup.md) |
 | 日常运维与故障排查 | [运维指南](operations-runbook.md) |
 | 备份、恢复、迁移与导出 | [数据维护](deployment-migration-export.md) |
+| 独立 CA、凭据授权与 CSR 自动签发 | [独立签发策略及接入](independent-signing.md) |
 | 时间戳服务 | [TSA](tsa.md) |
 | 构建、依赖与发布 | [发布指南](release.md) |
 | 变更、演练与故障记录 | [记录模板](operations-record-templates.md) |
@@ -89,7 +90,8 @@ set +a
 ## 认证与安全边界
 
 2026-11-14 的检查范围、发现、修复、验证和限制见
-[安全检查报告](security-review-2026-11-14.md)。
+[安全检查报告](security-review-2026-11-14.md)。独立签发的后续问题与修复见
+[2026-11-15 安全与文档复核](security-docs-review-2026-11-15.md)。
 
 - 超级管理员使用本地密码和 TOTP；普通用户、运维人员使用本地账户密码。
 - 服务器端会话使用 Secure、HttpOnly、SameSite=Strict 的 `__Host-pki_session`

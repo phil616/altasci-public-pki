@@ -20,6 +20,7 @@ require (
 	github.com/prometheus/client_golang v1.19.0
 	github.com/zmap/zcrypto v0.0.0-20230310154051-c8b263fd8300
 	github.com/zmap/zlint/v3 v3.5.0
+	golang.org/x/net v0.62.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 )
@@ -42,7 +43,6 @@ require (
 	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/weppos/publicsuffix-go v0.30.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

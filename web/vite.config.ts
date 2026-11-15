@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 
 const backend = 'http://127.0.0.1:8080';
 const proxy = Object.fromEntries(
-  ['/api', '/pki', '/issuers', '/crl', '/ocsp', '/tsa', '/health'].map((path) => [
+  ['/api', '/pki', '/issuers', '/crl', '/ocsp', '/tsa', '/health', '/signing'].map((path) => [
     path,
     { target: backend, changeOrigin: false },
   ]),

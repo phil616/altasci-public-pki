@@ -22,6 +22,7 @@
 | JSON 返回字段 | [models.go](../../console/store/models.go) 和处理函数中的响应构造 |
 | 数据结构和迁移兼容性 | [migrations](../../console/store/migrations)、[migrate.go](../../console/store/migrate.go) |
 | CA、签发与导入校验 | [service.go](../../console/pki/service.go)、[import.go](../../console/pki/import.go) |
+| 独立签发策略、凭据与隔离 | [signing](../../console/signing)、[策略及接入](independent-signing.md) |
 | TSA 与时钟 | [tsa](../../console/tsa) |
 | 页面、开发代理、模拟测试 | [web](../../web)、[vite.config.ts](../../web/vite.config.ts)、[playwright.config.ts](../../web/playwright.config.ts) |
 | 启动和代理示例 | [main.go](../../cmd/pki-console/main.go)、[systemd](pki-console.service)、[Nginx](nginx.conf.example) |
@@ -45,12 +46,13 @@ make pki-console-docs PYTHON=/tmp/pki-console-docs-venv/bin/python
 应用密钥或网络。脚本拒绝重复 YAML key，验证 OpenAPI 格式与本地引用，并核对：
 
 - Go 显式注册的管理/公开路由与 OpenAPI 方法、路径、域名，包括两端的存活检查。
-- 会话、CSRF 和可选幂等头是否与路由中间件一致。
+- 会话、CSRF、独立 Bearer scope、幂等头及其必填标志是否与路由和处理函数一致。
 - 已绑定的请求结构、存储模型和证书详情输出的 JSON 字段名称。
 - 配置加载、环境示例、入口配置表中的变量集合。
-- 当前 Markdown 和归档目录入口的本地链接目标，以及正文中的 Console Make 目标。
+- 当前 Markdown 和归档目录入口的行内本地链接、ATX 标题或显式 HTML id/name 锚点，
+  以及正文中的 Console Make 目标。
 
-当前检查不请求外部链接，不验证 Markdown 章节锚点、真实线上状态、字段类型/必填性/
+当前检查不请求外部链接，不验证完整 Markdown 渲染、真实线上状态、JSON 字段类型/必填性/
 验证边界、权限语义或示例命令的执行结果；归档正文不扫描。
 路由和结构读取依赖当前 Go 声明形式，重构后需同步更新检查器及字段绑定。
 新增 JSON 类型、响应构造方式或接口，评审时扩充映射，而不是删掉失败断言。

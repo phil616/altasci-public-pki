@@ -65,6 +65,9 @@ ORDER BY created_at LIMIT 50;
 
 ## CRL、OCSP 与 TSA
 
+本节描述系统管理的 CA。独立签发工具使用自己的作用域 CRL、凭据与额度，
+见 [独立签发策略](independent-signing.md)，不共享这里的 CRL/OCSP 记录。
+
 CRL 在初始化、吊销及公开读取时按需生成或刷新，没有独立的定时刷新任务。
 公开读取发现缺失或距 `NextUpdate` 不足一分钟时尝试刷新；失败可能返回 503。
 有效期最多 7 天，还会受签发链限制。

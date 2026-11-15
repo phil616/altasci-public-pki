@@ -23,6 +23,8 @@ import (
 	"github.com/cloudflare/cfssl/console/auth"
 	consoleconfig "github.com/cloudflare/cfssl/console/config"
 	"github.com/cloudflare/cfssl/console/pki"
+	"github.com/cloudflare/cfssl/console/security"
+	"github.com/cloudflare/cfssl/console/signing"
 	"github.com/cloudflare/cfssl/console/store"
 	"github.com/cloudflare/cfssl/console/tsa"
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,6 +38,7 @@ type Server struct {
 	auth            *auth.Service
 	pki             *pki.Service
 	tsa             *tsa.Service
+	signing         *signing.Service
 	logger          *slog.Logger
 	console         *http.ServeMux
 	public          *http.ServeMux
@@ -79,6 +82,11 @@ func New(cfg consoleconfig.Config, data *store.Store, authService *auth.Service,
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		s.requestCount, s.requestLatency)
 	s.metricsHandler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	publicBase := ""
+	if cfg.PublicBaseURL != nil {
+		publicBase = cfg.PublicBaseURL.String()
+	}
+	s.signing = signing.New(data.Pool(), security.Keyring{ActiveID: cfg.MasterKeyActiveID, Keys: cfg.MasterKeys}, publicBase)
 	s.routes()
 	return s, nil
 }
@@ -130,6 +138,22 @@ func (s *Server) routes() {
 	s.console.Handle("GET /api/v1/health/live", http.HandlerFunc(s.live))
 	s.console.Handle("GET /api/v1/health/ready", http.HandlerFunc(s.ready))
 	s.console.Handle("GET /api/v1/version", http.HandlerFunc(s.version))
+
+	s.console.Handle("GET /api/v1/signing-instances", s.requireAuth(http.HandlerFunc(s.listSigning)))
+	s.console.Handle("POST /api/v1/signing-instances", s.requireAuth(http.HandlerFunc(s.createSigning)))
+	s.console.Handle("GET /api/v1/signing-instances/{id}", s.requireAuth(http.HandlerFunc(s.getSigning)))
+	s.console.Handle("PUT /api/v1/signing-instances/{id}", s.requireAuth(s.idempotent(http.HandlerFunc(s.updateSigning))))
+	s.console.Handle("GET /api/v1/signing-instances/{id}/credentials", s.requireAuth(http.HandlerFunc(s.listSigningCredentials)))
+	s.console.Handle("POST /api/v1/signing-instances/{id}/credentials", s.requireAuth(http.HandlerFunc(s.createSigningCredential)))
+	s.console.Handle("POST /api/v1/signing-instances/{id}/credentials/{credentialID}/revoke", s.requireAuth(s.idempotent(http.HandlerFunc(s.revokeSigningCredential))))
+	s.console.Handle("GET /api/v1/signing-instances/{id}/certificates", s.requireAuth(http.HandlerFunc(s.listSigningCertificates)))
+	s.console.Handle("POST /api/v1/signing-instances/{id}/certificates/{certificateID}/revoke", s.requireAuth(s.idempotent(http.HandlerFunc(s.revokeSigningCertificate))))
+
+	s.public.Handle("POST /signing/{id}/issue", s.requireSigningToken("issue", s.limitExpensive(http.HandlerFunc(s.issueSigning))))
+	s.public.Handle("GET /signing/{id}/certificates/{certificateID}", s.requireSigningToken("read", http.HandlerFunc(s.readSigningCertificate)))
+	s.public.Handle("POST /signing/{id}/certificates/{certificateID}/revoke", s.requireSigningToken("revoke", s.limitExpensive(http.HandlerFunc(s.publicRevokeSigningCertificate))))
+	s.public.Handle("GET /signing/{id}/issuer.cer", http.HandlerFunc(s.signingIssuer))
+	s.public.Handle("GET /signing/{id}/crl", s.limitExpensive(http.HandlerFunc(s.signingCRL)))
 
 	s.public.HandleFunc("GET /pki/v1/authorities", s.publicAuthorities)
 	s.public.HandleFunc("GET /pki/v1/certificates/by-fingerprint/{fingerprint}", s.publicCertificateByFingerprint)

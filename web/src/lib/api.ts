@@ -69,7 +69,7 @@ interface RequestOptions extends Omit<RequestInit, 'body'> {
   idempotent?: boolean;
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json, application/problem+json');

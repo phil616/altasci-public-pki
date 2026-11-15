@@ -9,6 +9,7 @@ tests or reviewing validation rules, permissions and deployment procedures.
 from pathlib import Path
 import re
 import sys
+import unicodedata
 from urllib.parse import unquote, urlsplit
 
 try:
@@ -123,16 +124,26 @@ def check_routes(document, source):
                     continue
                 middleware = expected[key]
                 authenticated = "s.requireAuth(" in middleware
+                signing_bearer = "s.requireSigningToken(" in middleware
                 security = operation.get("security", document.get("security", []))
                 requirement = {"sessionCookie": []} if authenticated else None
                 if authenticated and method not in {"get", "head"}:
                     requirement["csrfToken"] = []
-                require(security == ([requirement] if requirement is not None else []),
+                expected_security = [{"signingToken": []}] if signing_bearer else ([requirement] if requirement is not None else [])
+                require(security == expected_security,
                         f"Session/CSRF declaration differs from middleware: {key}")
                 idempotent = any(p["in"] == "header" and p["name"] == "Idempotency-Key"
                                  for p in parameters)
-                require(idempotent == ("s.idempotent(" in middleware),
+                require(idempotent == ("s.idempotent(" in middleware or "s.issueSigning)" in middleware),
                         f"Idempotency declaration differs from middleware: {key}")
+                if idempotent:
+                    header = next(p for p in parameters if p["in"] == "header" and p["name"] == "Idempotency-Key")
+                    require(header.get("required", False) == ("s.issueSigning)" in middleware),
+                            f"Idempotency required flag differs from handler: {key}")
+                if signing_bearer:
+                    match = re.search(r's\.requireSigningToken\("(issue|read|revoke)"', middleware)
+                    require(match and operation.get("x-signing-scope") == match.group(1),
+                            f"Signing scope differs from middleware: {key}")
     require(expected.keys() == actual.keys(),
             f"Route drift: missing={sorted(expected.keys() - actual.keys())}; "
             f"extra={sorted(actual.keys() - expected.keys())}")
@@ -181,6 +192,14 @@ def check_fields(document):
         ("CreateTimestampAuthority", "console/tsa/service.go", "CreateAuthorityInput"),
     ]:
         compare(file, "type " + struct + " struct", schemas[schema], schema)
+    for schema, struct in {
+        "IndependentSigningPolicy": "Policy", "IndependentSigningPolicyInput": "Policy", "IndependentSigningInstance": "Instance",
+        "IndependentSigningCredential": "Credential", "IndependentSigningCertificate": "Certificate",
+        "IndependentSigningCreate": "CreateInput", "IndependentSigningUpdate": "UpdateInput",
+        "IndependentSigningCredentialInput": "CredentialInput", "IndependentSigningIssue": "IssueInput",
+        "IndependentSigningRevoke": "RevokeInput",
+    }.items():
+        compare("console/signing/models.go", "type " + struct + " struct", schemas[schema], schema)
     for file, handler, path, method in [
         ("handlers_auth.go", "login", "/auth/login", "post"),
         ("handlers_auth.go", "createUser", "/users", "post"),
@@ -215,17 +234,36 @@ def markdown_files():
             *sorted(DOCS.glob("*.md")), DOCS / "archive/cloudflare-2026/README.md"]
 
 
+def markdown_anchors(file):
+    source = re.sub(r"^```[^\n]*\n.*?^```[^\n]*$", "", file.read_text(), flags=re.S | re.M)
+    anchors = set(re.findall(r'<[^>]+(?:id|name)=[\"\']([^\"\']+)[\"\']', source))
+    seen = set()
+    for heading in re.findall(r"^ {0,3}#{1,6} +(.+?) *#* *$", source, re.M):
+        heading = re.sub(r"<[^>]*>", "", heading).lower()
+        slug = "".join(c for c in heading if c in " _-" or unicodedata.category(c)[0] in "LMN").replace(" ", "-")
+        candidate, count = slug, 0
+        while candidate in seen:
+            count += 1
+            candidate = f"{slug}-{count}"
+        seen.add(candidate)
+        anchors.add(candidate)
+    return anchors
+
+
 def check_links():
     count = 0
     for file in markdown_files():
         source = re.sub(r"^```[^\n]*\n.*?^```[^\n]*$", "", file.read_text(), flags=re.S | re.M)
         for target in re.findall(r"!?\[[^\]\n]*\]\(<?([^\s)>]+)>?\)", source):
             link = urlsplit(target)
-            if link.scheme or link.netloc or not link.path:
+            if link.scheme or link.netloc:
                 continue
-            resolved = (file.parent / unquote(link.path)).resolve()
+            resolved = (file.parent / unquote(link.path)).resolve() if link.path else file.resolve()
             require(resolved.is_relative_to(ROOT) and resolved.exists(),
                     f"Broken local link in {file.relative_to(ROOT)}: {target}")
+            if link.fragment and resolved.suffix.lower() == ".md":
+                require(unquote(link.fragment) in markdown_anchors(resolved),
+                        f"Broken Markdown anchor in {file.relative_to(ROOT)}: {target}")
             count += 1
         for target in set(re.findall(r"\bmake (pki-console[\w-]*)", source)):
             require(re.search(r"^" + re.escape(target) + r"\s*:", (ROOT / "Makefile").read_text(), re.M),

@@ -326,24 +326,33 @@ func (s *Store) RevokeCAGrant(ctx context.Context, caID, userID, permission stri
 }
 
 func (s *Store) Audit(ctx context.Context, event AuditEvent) error {
-	if event.Metadata == nil {
-		event.Metadata = map[string]any{}
-	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := s.AuditInTx(ctx, tx, event); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// AuditInTx appends to the same global hash chain in the caller's transaction.
+// Call it after locking business records, and commit the transaction only on success.
+func (s *Store) AuditInTx(ctx context.Context, tx pgx.Tx, event AuditEvent) error {
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
 	zero := make([]byte, sha256.Size)
-	if _, err = tx.Exec(ctx, `INSERT INTO audit_chain_heads(scope,head_hash) VALUES ('global',$1)
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_chain_heads(scope,head_hash) VALUES ('global',$1)
         ON CONFLICT (scope) DO NOTHING`, zero); err != nil {
 		return err
 	}
 	var previous []byte
-	if err = tx.QueryRow(ctx, `SELECT head_hash FROM audit_chain_heads WHERE scope='global' FOR UPDATE`).Scan(&previous); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT head_hash FROM audit_chain_heads WHERE scope='global' FOR UPDATE`).Scan(&previous); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `SELECT pki_create_audit_partition(date_trunc('month',current_date)::date)`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pki_create_audit_partition(date_trunc('month',current_date)::date)`); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(event)
@@ -370,10 +379,10 @@ func (s *Store) Audit(ctx context.Context, event AuditEvent) error {
 	if err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}
-	if _, err = tx.Exec(ctx, `UPDATE audit_chain_heads SET head_hash=$1,updated_at=now() WHERE scope='global'`, digest); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE audit_chain_heads SET head_hash=$1,updated_at=now() WHERE scope='global'`, digest); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func userColumnsWithAlias(alias string) string {

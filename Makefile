@@ -39,8 +39,9 @@ pki-console-system: pki-console
 
 .PHONY: pki-console-check
 pki-console-check:
-	go test ./console/... ./cmd/pki-console
+	go test -p 1 ./console/... ./cmd/pki-console
 	go vet ./console/... ./cmd/pki-console
+	$(PYTHON) -B -m unittest discover -s scripts -p test_signing_client.py
 	cd web && npm ci --no-audit --no-fund
 	cd web && npm run check
 

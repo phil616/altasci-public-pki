@@ -8,6 +8,8 @@ info:
     and password. Super administrators also provide an RFC 6238 SHA-256 TOTP code.
     Subsequent requests use the HttpOnly session cookie; unsafe requests also
     require the X-CSRF-Token returned at login. No external identity service is required.
+    Independent Signing public endpoints instead use instance-scoped Bearer credentials.
+    This separate CSR API is not ACME and does not perform domain-control challenges.
 
     Contract verified against source on 2026-11-15; domains are examples. The info.version
     identifies this API contract, not the deployed binary version from /version. JSON input
@@ -15,8 +17,8 @@ info:
     apply to UTF-8 data, including passwords and idempotency keys. Lists may contain
     items: null where documented when no records exist. Production serves distinct
     Console and public hostnames; unconfigured Host returns 421. Console requests
-    with an incompatible Origin return 403. Only documented idempotent operations
-    accept an optional Idempotency-Key. Response schemas describe current fields,
+    with an incompatible Origin return 403. Only documented management mutations accept an optional Idempotency-Key.
+    The independent public /signing/{id}/issue operation requires Idempotency-Key. Response schemas describe current fields,
     not a guarantee of redaction of public certificate metadata.
 servers:
   - {url: 'https://pki-console.example.com/api/v1', description: Console API}
@@ -32,6 +34,8 @@ tags:
   - {name: Utilities}
   - {name: Operations}
   - {name: Public PKI}
+  - name: Independent Signing
+    description: Isolated CA material and policy-based CSR issuance; custom protocol, not ACME.
 paths:
   /auth/login:
     post:
@@ -1237,6 +1241,493 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
       description: TSA requests are limited to 64 KiB; SHA-256/384/512 only. HTTP 200 may contain a protocol rejection.
         HTTP-level errors return problem JSON. Production signing requires healthy Linux kernel NTP state.
+  /signing-instances:
+    get:
+      tags: [Independent Signing]
+      operationId: listIndependentSigning
+      description: 'All roles: list only instances owned by the current user. No implicit super administrator access.'
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/IndependentSigningInstance'}
+                required: [items]
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [Independent Signing]
+      operationId: createIndependentSigning
+      description: Import a separate CA/key/complete chain; no managed CA reference or fingerprint deduplication.
+        Maximum 50 instances per owner. No idempotency cache; inspect instance list if response is lost. Private
+        keys never appear in responses.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningInstance'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningCreate'}
+  /signing-instances/{id}:
+    get:
+      tags: [Independent Signing]
+      operationId: getIndependentSigning
+      description: Owner only.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningInstance'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+    put:
+      tags: [Independent Signing]
+      operationId: updateIndependentSigning
+      description: Owner-only full policy/name/enabled update. CA material is immutable. Disabling blocks new issuance;
+        historical idempotency replay, read, revocation and CRL publication remain possible.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningInstance'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningUpdate'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+  /signing-instances/{id}/credentials:
+    get:
+      tags: [Independent Signing]
+      operationId: listIndependentCredentials
+      description: Owner only; tokens and token digests are never returned.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/IndependentSigningCredential'}
+                required: [items]
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+    post:
+      tags: [Independent Signing]
+      operationId: createIndependentCredential
+      description: Owner only. Maximum 1000 credentials per instance including revoked ones. Complete token returned
+        once. No idempotency support; revoke an uncertain credential and issue a new one if response is lost. Zero/omitted
+        lifetime/quota/rate use documented defaults.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential: {$ref: '#/components/schemas/IndependentSigningCredential'}
+                  token:
+                    type: string
+                    description: One-time plaintext credential. Store securely; never included in lists or idempotency
+                      caches.
+                required: [credential, token]
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningCredentialInput'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+  /signing-instances/{id}/credentials/{credentialID}/revoke:
+    post:
+      tags: [Independent Signing]
+      operationId: revokeIndependentCredential
+      description: Owner only. Prevents further bearer operations, including historical replay. Does not revoke
+        existing certificates.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '204': {description: Operation completed}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: credentialID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+  /signing-instances/{id}/certificates:
+    get:
+      tags: [Independent Signing]
+      operationId: listIndependentCertificates
+      description: Owner only. Cursor pagination, newest first. Invalid/out-of-range limits default to 100. next_cursor
+        is empty at the end.
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/IndependentSigningCertificate'}
+                  next_cursor: {type: string}
+                required: [items]
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: before
+          in: query
+          schema: {type: string, format: uuid}
+          description: Last returned certificate UUID; omitted starts at newest.
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 100}
+  /signing-instances/{id}/certificates/{certificateID}/revoke:
+    post:
+      tags: [Independent Signing]
+      operationId: ownerRevokeIndependentCertificate
+      description: Owner may revoke any certificate in this instance. Irreversible; identical repeated reason returns
+        current record, a different reason returns 409. Invalidates cached scoped CRL.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningCertificate'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningRevoke'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: certificateID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+  /signing/{id}/issue:
+    servers:
+      - {url: 'https://pki.example.com', description: Public independent signing API}
+    post:
+      tags: [Independent Signing]
+      operationId: issueIndependentCertificate
+      description: Requires issue scope and active owner/credential. Checks both policies and full chain. Serializes
+        instance operations; commits certificate, quota, operation key and audit atomically before response. Failed
+        requests/replays do not spend quota. Instance lifetime limit 50000 certificates. Rate windows count successful
+        issuance, plus per-process public IP/concurrency limits.
+      security:
+        - signingToken: []
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningCertificate'}
+          headers:
+            Idempotency-Replayed:
+              schema:
+                type: string
+                enum: ['true', 'false']
+              description: true if returning the original certificate for this key and identical raw body
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningIssue'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/SigningIdempotencyKey'}
+      x-signing-scope: issue
+  /signing/{id}/certificates/{certificateID}:
+    servers:
+      - {url: 'https://pki.example.com', description: Public independent signing API}
+    get:
+      tags: [Independent Signing]
+      operationId: readIndependentCertificate
+      description: Requires read scope. Only certificates issued by this exact credential are visible.
+      security:
+        - signingToken: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningCertificate'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: certificateID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      x-signing-scope: read
+  /signing/{id}/certificates/{certificateID}/revoke:
+    servers:
+      - {url: 'https://pki.example.com', description: Public independent signing API}
+    post:
+      tags: [Independent Signing]
+      operationId: revokeIndependentCertificate
+      description: Requires revoke scope and the exact credential that originally issued the certificate. Same reason
+        retry is idempotent, differing reason returns 409.
+      security:
+        - signingToken: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IndependentSigningCertificate'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IndependentSigningRevoke'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: certificateID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      x-signing-scope: revoke
+  /signing/{id}/issuer.cer:
+    servers:
+      - {url: 'https://pki.example.com', description: Public independent signing API}
+    get:
+      tags: [Independent Signing]
+      operationId: independentIssuer
+      description: Anonymous DER issuer certificate; separate from managed issuer publication.
+      security: []
+      responses:
+        '200':
+          description: Anonymous DER issuer certificate; separate from managed issuer publication.
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/pkix-cert: {}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+  /signing/{id}/crl:
+    servers:
+      - {url: 'https://pki.example.com', description: Public independent signing API}
+    get:
+      tags: [Independent Signing]
+      operationId: independentCRL
+      description: Anonymous signed CRL with critical Issuing Distribution Point bound to this instance URI and
+        end-entity certificates. Cached internally until one minute before NextUpdate, invalidated by revocation.
+        NextUpdate <=24 hours and full CA chain expiry. Remains available for suspended instances/owners while valid;
+        no OCSP.
+      security: []
+      responses:
+        '200':
+          description: Anonymous signed CRL with critical Issuing Distribution Point bound to this instance URI
+            and end-entity certificates. Cached internally until one minute before NextUpdate, invalidated by revocation.
+            NextUpdate <=24 hours and full CA chain expiry. Remains available for suspended instances/owners while
+            valid; no OCSP.
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/pkix-crl: {}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
 components:
   securitySchemes:
     sessionCookie:
@@ -1249,6 +1740,12 @@ components:
       in: header
       name: X-CSRF-Token
       description: Returned by /auth/login and required on authenticated methods other than GET, HEAD, and OPTIONS.
+    signingToken:
+      type: http
+      scheme: bearer
+      bearerFormat: ist_<256-bit random base64url secret>
+      description: Independent signing credential displayed once at creation; applies only to one instance. Not
+        a browser session, OAuth flow or ACME account.
   parameters:
     ID:
       name: id
@@ -1262,6 +1759,14 @@ components:
       description: Optional 8–128 UTF-8 byte key retained for 24 hours, scoped to user and route. Same method/URL/body
         replays stored status/body; changed content returns 409. Responses >=500 are not cached.
       schema: {type: string, minLength: 8, maxLength: 128}
+    SigningIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Persistent operation key scoped to this credential. Reuse with identical raw JSON returns the
+        same certificate with no quota charge; changed content returns 409. Retained with issuance history. Revoked/expired
+        credentials cannot replay. New key required for renewal.
+      schema: {type: string, minLength: 8, maxLength: 128, pattern: '^[!-~]{8,128}$'}
   responses:
     Problem:
       description: RFC 9457 problem detail
@@ -1746,5 +2251,274 @@ components:
         previous_hash: {type: string}
         event_hash: {type: string}
         occurred_at: {type: string, format: date-time}
+    IndependentSigningPolicy:
+      type: object
+      properties:
+        version: {type: integer, const: 1}
+        allowed_dns_names:
+          type: array
+          items: {type: string}
+          maxItems: 100
+          description: Exact IDNA DNS names or a single-label *.example.com rule; empty denies DNS.
+        allowed_ip_ranges:
+          type: array
+          items: {type: string}
+          maxItems: 100
+          description: Native IPv4/IPv6 CIDRs; empty denies IP SANs.
+        allowed_email_domains:
+          type: array
+          items: {type: string}
+          maxItems: 100
+          description: Exact email domains; empty denies email SANs.
+        allowed_uri_prefixes:
+          type: array
+          items: {type: string}
+          maxItems: 100
+          description: https/spiffe URI prefixes matched on path boundaries; empty denies URI SANs.
+        allow_wildcards: {type: boolean, default: false}
+        extended_key_usages:
+          type: array
+          items:
+            type: string
+            enum: [server_auth, client_auth]
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+        default_validity_seconds: {type: integer, minimum: 60, maximum: 34300800}
+        max_validity_seconds: {type: integer, minimum: 60, maximum: 34300800}
+        max_sans: {type: integer, minimum: 1, maximum: 100}
+      required: [version, extended_key_usages, default_validity_seconds, max_validity_seconds, max_sans]
+      additionalProperties: false
+      description: 'Policy v1: explicit identity allow-lists, no domain-control verification. At least one nonempty
+        identity list; default validity <= maximum. Instance and optional credential policies both apply; EKU intersection
+        and stricter limits. Only SAN CSR extensions are accepted; leaf constraints and publication URLs are constructed
+        by the server. URI paths require unescaped RFC 3986 pchar or slash, without dot segments. Signing JSON fields
+        are case-sensitive; duplicate keys and null non-nullable fields are rejected.'
+      anyOf:
+        - required: [allowed_dns_names]
+          properties:
+            allowed_dns_names: {type: array, minItems: 1}
+        - required: [allowed_ip_ranges]
+          properties:
+            allowed_ip_ranges: {type: array, minItems: 1}
+        - required: [allowed_email_domains]
+          properties:
+            allowed_email_domains: {type: array, minItems: 1}
+        - required: [allowed_uri_prefixes]
+          properties:
+            allowed_uri_prefixes: {type: array, minItems: 1}
+    IndependentSigningInstance:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        owner_id: {type: string, format: uuid}
+        name: {type: string}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
+        policy: {$ref: '#/components/schemas/IndependentSigningPolicy'}
+        enabled: {type: boolean}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        endpoint: {type: string, format: uri}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    IndependentSigningCreate:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        certificate_pem: {type: string, maxLength: 65536}
+        private_key_pem: {type: string, maxLength: 32768, writeOnly: true}
+        chain_pem:
+          type: string
+          maxLength: 262144
+          description: Ordered complete issuer chain through a self-signed root. Optional for self-signed CA. May
+            include the signer as its first certificate.
+        policy: {$ref: '#/components/schemas/IndependentSigningPolicyInput'}
+      required: [name, certificate_pem, private_key_pem, policy]
+      additionalProperties: false
+    IndependentSigningUpdate:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        policy: {$ref: '#/components/schemas/IndependentSigningPolicyInput'}
+        enabled: {type: boolean, default: false}
+      required: [name, policy]
+      additionalProperties: false
+    IndependentSigningCredentialInput:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [issue, read, revoke]
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+        policy:
+          anyOf:
+            - {$ref: '#/components/schemas/IndependentSigningPolicyInput'}
+            - {type: 'null'}
+        lifetime_seconds:
+          type: integer
+          minimum: 0
+          maximum: 7776000
+          default: 2592000
+          anyOf:
+            - {const: 0}
+            - {minimum: 3600}
+          description: Zero or omitted selects the documented default.
+        max_issuances:
+          type: integer
+          minimum: 0
+          maximum: 1000000
+          default: 1000
+          description: Zero or omitted selects the documented default.
+        rate_per_minute:
+          type: integer
+          minimum: 0
+          maximum: 120
+          default: 10
+          description: Zero or omitted selects the documented default.
+      required: [name, scopes]
+      additionalProperties: false
+    IndependentSigningCredential:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        instance_id: {type: string, format: uuid}
+        name: {type: string}
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [issue, read, revoke]
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+        policy:
+          anyOf:
+            - {$ref: '#/components/schemas/IndependentSigningPolicy'}
+            - {type: 'null'}
+        max_issuances: {type: integer}
+        issued_count: {type: integer}
+        rate_per_minute: {type: integer}
+        expires_at: {type: string, format: date-time}
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
+        created_at: {type: string, format: date-time}
+    IndependentSigningIssue:
+      type: object
+      properties:
+        csr_pem:
+          type: string
+          maxLength: 65536
+          description: Exactly one valid PKCS#10 PEM request; RSA-2048/3072/4096 or ECDSA-P256/P384. At least one
+            SAN. CN must match an allowed SAN. Only requested SAN extensions are accepted.
+        validity_seconds:
+          type: integer
+          minimum: 0
+          maximum: 34300800
+          default: 0
+          description: Zero or omitted uses the stricter default; explicit values must be >=60 and within both policy
+            maxima. Final expiry is clipped to the full CA chain.
+          anyOf:
+            - {const: 0}
+            - {minimum: 60}
+      required: [csr_pem]
+      additionalProperties: false
+    IndependentSigningRevoke:
+      type: object
+      properties:
+        reason:
+          type: integer
+          minimum: 0
+          maximum: 10
+          default: 0
+          not:
+            enum: [7, 8]
+      additionalProperties: false
+    IndependentSigningCertificate:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        instance_id: {type: string, format: uuid}
+        credential_id: {type: string, format: uuid}
+        serial: {type: string, pattern: '^[1-9][0-9]*$'}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
+        fingerprint_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
+        revocation_reason:
+          type: [integer, 'null']
+        created_at: {type: string, format: date-time}
+        status:
+          type: string
+          enum: [good, revoked, expired]
+    IndependentSigningPolicyInput:
+      type: object
+      properties:
+        version: {type: integer, const: 1}
+        allowed_dns_names:
+          type: [array, 'null']
+          items: {type: string}
+          maxItems: 100
+          description: Exact IDNA DNS names or a single-label *.example.com rule; empty denies DNS. Null is normalized
+            to an empty denying list.
+        allowed_ip_ranges:
+          type: [array, 'null']
+          items: {type: string}
+          maxItems: 100
+          description: Native IPv4/IPv6 CIDRs; empty denies IP SANs. Null is normalized to an empty denying list.
+        allowed_email_domains:
+          type: [array, 'null']
+          items: {type: string}
+          maxItems: 100
+          description: Exact email domains; empty denies email SANs. Null is normalized to an empty denying list.
+        allowed_uri_prefixes:
+          type: [array, 'null']
+          items: {type: string}
+          maxItems: 100
+          description: https/spiffe URI prefixes matched on path boundaries; empty denies URI SANs. Null is normalized
+            to an empty denying list.
+        allow_wildcards: {type: boolean, default: false}
+        extended_key_usages:
+          type: array
+          items:
+            type: string
+            enum: [server_auth, client_auth]
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+        default_validity_seconds: {type: integer, minimum: 60, maximum: 34300800}
+        max_validity_seconds: {type: integer, minimum: 60, maximum: 34300800}
+        max_sans: {type: integer, minimum: 1, maximum: 100}
+      required: [version, extended_key_usages, default_validity_seconds, max_validity_seconds, max_sans]
+      additionalProperties: false
+      description: 'Policy v1: explicit identity allow-lists, no domain-control verification. At least one nonempty
+        identity list; default validity <= maximum. Instance and optional credential policies both apply; EKU intersection
+        and stricter limits. Only SAN CSR extensions are accepted; leaf constraints and publication URLs are constructed
+        by the server. URI paths require unescaped RFC 3986 pchar or slash, without dot segments. Signing JSON fields
+        are case-sensitive; duplicate keys and null non-nullable fields are rejected. Optional identity allow-lists
+        accept null as empty for Go-client compatibility; required values and request objects do not accept null.'
+      anyOf:
+        - required: [allowed_dns_names]
+          properties:
+            allowed_dns_names: {type: array, minItems: 1}
+        - required: [allowed_ip_ranges]
+          properties:
+            allowed_ip_ranges: {type: array, minItems: 1}
+        - required: [allowed_email_domains]
+          properties:
+            allowed_email_domains: {type: array, minItems: 1}
+        - required: [allowed_uri_prefixes]
+          properties:
+            allowed_uri_prefixes: {type: array, minItems: 1}
 security:
   - sessionCookie: []

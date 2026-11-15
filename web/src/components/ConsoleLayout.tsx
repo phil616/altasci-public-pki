@@ -46,6 +46,7 @@ export function ConsoleLayout() {
     { key: '/users', label: '用户管理', icon: <TeamOutlined />, visible: can(user?.role, 'manage_users') },
     { key: '/audit', label: '审计日志', icon: <AuditOutlined />, visible: can(user?.role, 'read_audit') },
     { key: '/utilities', label: 'PKI 工具', icon: <ToolOutlined /> },
+    { key: '/tools/signing', label: '独立签发', icon: <SafetyCertificateFilled /> },
   ].filter((item) => item.visible !== false), [user?.role]);
 
   const menu = (

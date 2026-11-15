@@ -13,6 +13,9 @@ make pki-console
 ./bin/pki-console serve
 ```
 
+An [independent CSR signing tool](doc/pki-console/independent-signing.md) supports
+user-supplied CAs and scoped bearer credentials without sharing managed PKI records.
+
 Start with [the application guide](doc/pki-console/README.md) and
 [production deployment and migration](doc/pki-console/production-deployment.md).
 A complete [Nginx example](doc/pki-console/nginx.conf.example) and

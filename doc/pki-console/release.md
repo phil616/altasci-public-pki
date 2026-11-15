@@ -7,6 +7,7 @@ PKI-Console 的 GitHub Actions。根目录 Dockerfile、`.goreleaser.yml`、`mak
 ## 构建与检查
 
 工具版本以 [go.mod](../../go.mod)、[package.json](../../web/package.json) 和锁文件为准。
+`pki-console-check` 还使用 Python 3 执行随附客户端的状态恢复测试。
 Make 默认使用 vendor 模式且关闭 GOPROXY，预先安装 Go 工具链；`npm ci` 仍需可用源或缓存。
 
 ```sh
@@ -47,3 +48,6 @@ Google Chrome，在浏览器边界模拟 API，不代替数据库测试。
 交付二进制及对应文档、配置示例，环境密钥通过独立渠道配置。按
 [部署指南](production-deployment.md) 备份、迁移、替换程序、重启和验收。
 回退前核实 schema 与新数据兼容性，不能只恢复旧二进制。
+
+Go 工具链升级后，漏洞扫描器也需使用能解析对应 Go 语法的版本；用 `go version -m`
+核对扫描器构建信息。解析失败不是扫描通过，必要时更新扫描工具并重新运行。

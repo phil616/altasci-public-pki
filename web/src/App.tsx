@@ -22,6 +22,7 @@ const PublicLookupPage = lazy(() => import('@/pages/PublicPage').then((module) =
 const RequestDetailPage = lazy(() => import('@/pages/RequestDetailPage').then((module) => ({ default: module.RequestDetailPage })));
 const RequestsPage = lazy(() => import('@/pages/RequestsPage').then((module) => ({ default: module.RequestsPage })));
 const UsersPage = lazy(() => import('@/pages/UsersPage').then((module) => ({ default: module.UsersPage })));
+const SigningPage = lazy(() => import('@/pages/SigningPage').then((module) => ({ default: module.SigningPage })));
 const UtilitiesPage = lazy(() => import('@/pages/UtilitiesPage').then((module) => ({ default: module.UtilitiesPage })));
 
 function isPublicSurface(): boolean {
@@ -47,7 +48,7 @@ function ProtectedRoute() {
 }
 
 function ConsoleRoutes() {
-  return <Routes><Route path="/login" element={<LoginPage />} /><Route element={<ProtectedRoute />}><Route index element={<DashboardPage />} /><Route path="authorities" element={<AuthoritiesPage />} /><Route path="authorities/:id" element={<AuthorityDetailPage />} /><Route path="requests" element={<RequestsPage />} /><Route path="requests/:id" element={<RequestDetailPage />} /><Route path="certificates" element={<CertificatesPage />} /><Route path="certificates/:id" element={<CertificateDetailPage />} /><Route path="users" element={<RequireCapability capability="manage_users"><UsersPage /></RequireCapability>} /><Route path="audit" element={<RequireCapability capability="read_audit"><AuditPage /></RequireCapability>} /><Route path="utilities" element={<UtilitiesPage />} /></Route><Route path="*" element={<NotFound />} /></Routes>;
+  return <Routes><Route path="/login" element={<LoginPage />} /><Route element={<ProtectedRoute />}><Route index element={<DashboardPage />} /><Route path="authorities" element={<AuthoritiesPage />} /><Route path="authorities/:id" element={<AuthorityDetailPage />} /><Route path="requests" element={<RequestsPage />} /><Route path="requests/:id" element={<RequestDetailPage />} /><Route path="certificates" element={<CertificatesPage />} /><Route path="certificates/:id" element={<CertificateDetailPage />} /><Route path="users" element={<RequireCapability capability="manage_users"><UsersPage /></RequireCapability>} /><Route path="audit" element={<RequireCapability capability="read_audit"><AuditPage /></RequireCapability>} /><Route path="utilities" element={<UtilitiesPage />} /><Route path="tools/signing" element={<SigningPage />} /><Route path="tools/signing/:id" element={<SigningPage />} /></Route><Route path="*" element={<NotFound />} /></Routes>;
 }
 
 function PublicRoutes() {
