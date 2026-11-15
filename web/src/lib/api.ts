@@ -193,7 +193,7 @@ export interface CreateTimestampAuthorityInput {
 }
 
 export const consoleAPI = {
-  login: async (input: { login: string; password: string; totp?: string }) => {
+  login: async (input: { login: string; password: string }) => {
     const result = await request<LoginResponse>(`${consoleBase}/auth/login`, { method: 'POST', body: input });
     setCSRFToken(result.csrf_token);
     return result;
@@ -219,8 +219,8 @@ export const consoleAPI = {
     request<CertificateAuthority>(`${consoleBase}/cas/intermediates`, { method: 'POST', body: input, idempotent: true }),
   importCA: (input: ImportCAInput) =>
     request<CertificateAuthority>(`${consoleBase}/cas/import`, { method: 'POST', body: input, idempotent: true }),
-  exportCAKey: (id: string, password: string, totp: string) =>
-    download(`${consoleBase}/cas/${id}/keys/export`, `${id}-ca-private-key.pem`, 'POST', { password, totp }),
+  exportCAKey: (id: string, password: string) =>
+    download(`${consoleBase}/cas/${id}/keys/export`, `${id}-ca-private-key.pem`, 'POST', { password }),
   profiles: (caID: string) => requestList<SigningProfile>(`${consoleBase}/cas/${caID}/profiles`),
   createProfile: (caID: string, input: SigningProfileInput) =>
     request<SigningProfile>(`${consoleBase}/cas/${caID}/profiles`, { method: 'POST', body: input, idempotent: true }),

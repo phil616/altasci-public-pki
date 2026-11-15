@@ -57,7 +57,7 @@ describe('console API security headers', () => {
       user: { id: 'root-id' }, csrf_token: 'memory-token', expires_at: '2030-01-01T00:00:00Z',
     }), { status: 200 })).mockResolvedValueOnce(new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchMock);
-    await consoleAPI.login({ login: 'root@example.test', password: 'unchanged password', totp: '123456' });
+    await consoleAPI.login({ login: 'root@example.test', password: 'unchanged password' });
     expect(hasCSRFToken()).toBe(true);
     await consoleAPI.setUserStatus('user-id', 'disabled');
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -66,11 +66,11 @@ describe('console API security headers', () => {
     expect(hasCSRFToken()).toBe(false);
   });
 
-  it('does not turn a login challenge into an expired-session event', async () => {
+  it('does not turn a bad password into an expired-session event', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      status: 401, code: 'second_factor_required', detail: 'TOTP required',
+      status: 401, code: 'invalid_credentials', detail: 'Username or password is invalid',
     }), { status: 401 })));
-    await expect(consoleAPI.login({ login: 'root', password: 'password' })).rejects.toMatchObject({ code: 'second_factor_required' });
+    await expect(consoleAPI.login({ login: 'root', password: 'password' })).rejects.toMatchObject({ code: 'invalid_credentials' });
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
 

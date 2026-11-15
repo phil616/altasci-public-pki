@@ -1,6 +1,6 @@
 [Unit]
 Description=PKI-Console frontend, API and issuance worker
-# Deployment guide: production-deployment.md beside this unit in the source tree.
+# Installation: README.md in the release archive; source guide: doc/pki-console/production-deployment.md.
 Wants=network-online.target
 After=network-online.target
 

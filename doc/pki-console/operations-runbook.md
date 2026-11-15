@@ -1,6 +1,6 @@
 # 日常运维与故障处理
 
-状态：当前指南；核对日期：2026-11-15。适用于单体 `pki-console`、外部 Nginx 和
+状态：当前指南；核对日期：2026-11-16。适用于单体 `pki-console`、外部 Nginx 和
 PostgreSQL 18+。示例域名、路径和服务名需按部署修改，不代表已核实的线上状态。
 安装见 [部署指南](production-deployment.md)，恢复见 [备份与迁移](deployment-migration-export.md)。
 
@@ -29,19 +29,14 @@ curl --fail https://pki-console.example.com/api/v1/version
   目前是代码常量，不能通过自行添加环境变量调整。
 - 账户连续 5 次认证失败锁定 15 分钟；登录另限每客户端 IP 每分钟 10 次。
   锁定期间重试不延长锁定；锁定到期后的首次失败从 1 重新计数。
-  root 密码正确但未填写 TOTP 返回 `second_factor_required`，不增加账户失败次数；错误密码、
-  错误或重放验证码继续计数。客户端角色选项不影响服务端的强制 TOTP 校验。
-- 超级管理员使用 SHA-256、6 位、30 秒 TOTP；接受当前时间步前后各一格，已成功接受
-  的时间步不能再次用于登录或敏感导出。
-- 导出二次验证每用户每分钟最多 5 次，失败或超限返回 403 `step_up_failed`。
+- CA 私钥导出要求确认当前管理员密码，每用户每分钟最多 5 次，失败或超限返回 403 `password_verification_failed`。
   通用流量或并发限制返回 429，按 `Retry-After` 等待。
 
-401 先核对具体错误码、账户、Cookie、锁定状态和 TOTP 算法/时间，避免反复快速重试。
+401 先核对具体错误码、账户、Cookie、锁定状态，避免反复快速重试。
 403 `csrf_failed` 单独检查 CSRF；503 `authentication_unavailable` 检查数据库和服务日志，不能当作密码错误。
-新版本在验证密码后用 401 `account_locked` 和 `totp_replayed` 区分锁定与重放；
-503 `totp_clock_behind` 表示当前验证码正确但已用时间步超前，应检查时钟/重放状态，不累计凭据失败。
+密码验证通过但仍被锁定时，返回 401 `account_locked` 和 `Retry-After`。
 生产 Cookie 为 `__Host-pki_session`，仅 HTTPS、HttpOnly、SameSite=Strict。
-CA 私钥导出需要重新输入**当前密码**和未使用的 TOTP。
+CA 私钥导出需要重新输入**当前密码**。
 
 ### 超级管理员始终登录失败
 
@@ -49,26 +44,22 @@ CA 私钥导出需要重新输入**当前密码**和未使用的 TOTP。
    Nginx 保留管理 Host；不要在公开域名或直接通过 HTTP/IP 测试生产 Cookie。
 2. 使用运行进程实际加载的 `ROOT_USER_EMAIL` 和 `ROOT_USER_PASSWORD`。程序不自动读取 `.env`；
    修改 systemd 环境文件后重启才生效。密码按原文校验，不移除首尾空格，不附加环境文件的引用符。
-3. 使用匹配 `ROOT_USER_TOTP_SECRET` 的验证器，确认 **SHA-256、6 位、30 秒**，检查手机和服务器时间。
-   常见默认 SHA-1 生成的验证码不匹配；已接受的验证码不能重复使用。
-4. 根据页面请求编号查看 `login denied` 日志的 `stage`/`error`：`password` 是密码/hash 问题，
-   `totp` 表示密码已通过，`account_state` 是旧版本的禁用/锁定结果。
-   用 [认证诊断](authentication-diagnostics.md) 中的 `auth-check --pid PID` 检查实际进程环境，
-   并通过 `--totp-stdin` 只读核对当前代码；不要公开环境文件或原始登录请求。
+3. 核对日志 `login denied` 的 `stage`/`error` 和请求编号。`password` 表示密码不匹配，
+   `account_locked` 表示密码正确但仍在锁定期，`user_lookup` 表示登录标识不匹配。
+4. 确认数据库已按 [首版基线初始化](schema-initialization.md)，并完整更新内嵌前端的二进制。
 5. 若之前已累计锁定，停止重试并等待 15 分钟。需要凭据恢复时，更新环境中的 root 密码后重启
-   新版本，密码同步会清除旧锁定。仅重启且不修改凭据会保留锁定和重放保护。
+   新版本，密码同步会清除旧锁定。仅重启且不修改凭据会保留密码失败锁定。
 
-受控测试库或运维连接可使用只读查询检查状态，不读取密码 hash 或验证器密钥：
+受控测试库或运维连接可使用只读查询检查状态，不读取密码 hash：
 
 ```sql
-SELECT username, email, status, failed_login_count, locked_until,
-       to_timestamp(root_totp_last_step * 30) AS last_accepted_totp_time
+SELECT username, email, status, failed_login_count, locked_until
 FROM users WHERE role = 'super_admin';
 ```
 
 用户名/邮箱共享登录标识空间，新建账户禁止跨字段重复。历史库若存在一个账户的用户名等于
 另一个账户的邮箱，该标识将被拒绝；用无歧义的另一标识登录，再按受控数据维护流程修正历史冲突。
-具体复现、修复和验证范围见 [认证检查记录](authentication-review-2026-11-15.md)。
+当前协议及账户配置见 [密码认证](password-authentication.md)。
 
 ## 签发任务
 
@@ -117,11 +108,8 @@ OCSP、TSA 分别限每客户端 IP 每分钟 120 次；部分密码运算接口
 ## 凭据和主密钥变更
 
 超级管理员凭据由环境配置在启动时同步，更换密码后重启服务。普通账户密码重置和
-禁用会撤销会话。迁移 `00005_root_totp_state.sql` 保存 root TOTP 密钥的 SHA-256 指纹，
-不保存密钥本身；首次登记指纹会撤销已有 root 会话并保留已用时间步。
-后续 TOTP 密钥变化会原子撤销旧会话并为新密钥重置时间步。未更换凭据的重启不会重置已用验证码。
-若还有旧进程运行，应一并更新/重启；检测到不匹配的密钥指纹时旧进程拒绝认证。
-泄露后仍需检查审计、受影响业务操作及独立签发凭据，不能只依赖会话撤销。
+禁用会撤销会话。管理员密码实际改变时也会撤销其旧会话，需重新登录。
+凭据泄露后同时检查审计、受影响业务操作及独立签发凭据。
 
 新增 KEK 时保留 `PKI_MASTER_KEYS` 全部旧条目，再切换 `PKI_MASTER_KEY_ACTIVE_ID`
 并重启。active ID 只影响后续加密，不会自动重新加密已有密钥。当前没有批量重加密
@@ -138,7 +126,7 @@ OCSP、TSA 分别限每客户端 IP 每分钟 120 次；部分密码运算接口
 | 写操作 403 csrf_failed | 是否发送对应会话的 CSRF token |
 | 登录/会话 503 authentication_unavailable | 数据库连通性、权限、schema 与服务日志 |
 | 写操作 503 | 数据库或审计分区写入失败 |
-| 私钥导出 403 | 当前密码、未使用的 TOTP、角色、二次验证限流 |
+| 私钥导出 403 | 当前密码、角色、密码确认限流 |
 | 一次性私钥 404/410 | 归属、已领取或超过 24 小时 |
 | 解密失败 | 对应 KEK ID 和密钥是否仍在环境配置中 |
 | TSA HTTP 200 但拒绝 | 解析 DER 状态，检查 TSU、链、NTP 和日志 |

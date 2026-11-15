@@ -5,19 +5,15 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
-	"encoding/base32"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +89,6 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	for name, value := range map[string]string{
 		"DATABASE_URL": databaseURL, "PUBLIC_BASE_URL": publicURL.String(), "CONSOLE_BASE_URL": consoleURL.String(),
 		"ROOT_USER_EMAIL": "root@example.test", "ROOT_USER_PASSWORD": "0123456789abcdefghijklmnopqrstuvwxyz",
-		"ROOT_USER_TOTP_SECRET":    base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes.Repeat([]byte{1}, 20)),
 		"PKI_MASTER_KEY_ACTIVE_ID": "v1", "PKI_MASTER_KEYS": `{"v1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)) + `"}`,
 		"PKI_DEVELOPMENT_INSECURE": "true", "PKI_LISTEN_ADDRESS": "127.0.0.1:8080",
 		"TRUSTED_PROXY_CIDRS": "127.0.0.1/32", "TSA_MAX_CLOCK_UNCERTAINTY": "5s",
@@ -142,6 +137,29 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("export key using only the current password", func(t *testing.T) {
+		body, _ := json.Marshal(map[string]string{"login": cfg.RootUserEmail, "password": cfg.RootUserPassword})
+		login := httptest.NewRecorder()
+		handler.ServeHTTP(login, httptest.NewRequest("POST", "http://"+cfg.ConsoleHostname+"/api/v1/auth/login", bytes.NewReader(body)))
+		if login.Code != http.StatusOK {
+			t.Fatalf("password login before export: %d", login.Code)
+		}
+		var result struct {
+			CSRFToken string `json:"csrf_token"`
+		}
+		if err := json.Unmarshal(login.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(map[string]string{"password": cfg.RootUserPassword})
+		r := httptest.NewRequest("POST", "http://"+cfg.ConsoleHostname+"/api/v1/cas/"+rootCA.ID+"/keys/export", bytes.NewReader(payload))
+		r.AddCookie(login.Result().Cookies()[0])
+		r.Header.Set("X-CSRF-Token", result.CSRFToken)
+		exported := httptest.NewRecorder()
+		handler.ServeHTTP(exported, r)
+		if exported.Code != http.StatusOK || !strings.Contains(exported.Body.String(), "BEGIN PRIVATE KEY") {
+			t.Fatalf("password-only key export failed: %d", exported.Code)
+		}
+	})
 	intermediate, err := pkiService.CreateIntermediate(ctx, root, pki.CreateCAInput{Name: "Test Issuer", Slug: "test-issuer",
 		ParentCAID: rootCA.ID, Subject: pki.Subject{CommonName: "Test Issuer CA", Organization: "Example"}})
 	if err != nil {
@@ -412,62 +430,45 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	}
 }
 
-// testStandaloneRootAuth checks password/TOTP, replay rejection, secure cookies,
-// session authentication, CSRF and credential step-up through the real API.
+// testStandaloneRootAuth checks password-only authentication, secure cookies,
+// repeat logins, sessions, password confirmation, lock status and logout.
 func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfig.Config, data *store.Store) {
 	t.Helper()
 	forged := httptest.NewRequest("GET", "https://"+cfg.ConsoleHostname+"/api/v1/auth/session", nil)
 	forged.Header.Set("Cf-Access-Jwt-Assertion", "forged-gateway-identity")
 	forged.Header.Set("Cf-Access-Authenticated-User-Email", cfg.RootUserEmail)
-	forged.Header.Set("X-PKI-User-Email", cfg.RootUserEmail)
-	forgedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(forgedResponse, forged)
-	if forgedResponse.Code != http.StatusUnauthorized {
-		t.Fatal("legacy gateway headers authenticated a request without a session")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, forged)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatal("gateway headers authenticated a request")
 	}
-	login := func(password, code string) *httptest.ResponseRecorder {
-		body, _ := json.Marshal(map[string]string{"login": cfg.RootUserEmail, "password": password, "totp": code})
+	login := func(password string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"login": cfg.RootUserEmail, "password": password})
 		r := httptest.NewRequest("POST", "https://"+cfg.ConsoleHostname+"/api/v1/auth/login", bytes.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:1234"
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	if w := login(cfg.RootUserPassword, ""); w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"code":"second_factor_required"`) {
-		t.Fatalf("root login without TOTP: %d %s", w.Code, w.Body.String())
+	if w := login("wrong-password"); w.Code != http.StatusUnauthorized {
+		t.Fatal("wrong password accepted")
 	}
-	var counter [8]byte
-	binary.BigEndian.PutUint64(counter[:], uint64(time.Now().Unix()/30))
-	// Generate the submitted code with OpenSSL rather than another copy of the
-	// application's HMAC implementation. The fixture uses a public test secret.
-	command := exec.Command("openssl", "dgst", "-sha256", "-mac", "HMAC",
-		"-macopt", "hexkey:"+hex.EncodeToString(cfg.RootUserTOTPSecret), "-binary")
-	command.Stdin = bytes.NewReader(counter[:])
-	digest, err := command.Output()
-	if err != nil || len(digest) != 32 {
-		t.Fatalf("OpenSSL SHA-256 fixture failed: %v", err)
-	}
-	offset := digest[len(digest)-1] & 0x0f
-	code := fmt.Sprintf("%06d", (binary.BigEndian.Uint32(digest[offset:offset+4])&0x7fffffff)%1_000_000)
-	if w := login("wrong-password", code); w.Code != http.StatusUnauthorized {
-		t.Fatalf("root login with wrong password: %d", w.Code)
-	}
-	w := login(cfg.RootUserPassword, code)
+	w = login(cfg.RootUserPassword)
 	if w.Code != http.StatusOK {
-		t.Fatalf("standalone root login: %d %s", w.Code, w.Body.String())
+		t.Fatalf("password-only root login: %d %s", w.Code, w.Body.String())
 	}
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != auth.CookieName || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Fatalf("invalid production session cookie: %v", cookies)
+		t.Fatal("invalid production session cookie")
 	}
 	var result struct {
 		CSRFToken string `json:"csrf_token"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.CSRFToken == "" {
-		t.Fatalf("invalid login response: %s", w.Body.String())
+		t.Fatal("invalid login response")
 	}
-	if replay := login(cfg.RootUserPassword, code); replay.Code != http.StatusUnauthorized || !strings.Contains(replay.Body.String(), `"code":"totp_replayed"`) {
-		t.Fatalf("TOTP replay accepted: %d", replay.Code)
+	if again := login(cfg.RootUserPassword); again.Code != http.StatusOK {
+		t.Fatal("repeated password login was rejected")
 	}
 	for _, tc := range []struct {
 		method, path, csrf, body string
@@ -476,7 +477,8 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 		{"GET", "/api/v1/auth/session", "", "", 200},
 		{"GET", "/api/v1/users", "", "", 200},
 		{"POST", "/api/v1/auth/logout", "", "", 403},
-		{"POST", "/api/v1/cas/nonexistent/keys/export", result.CSRFToken, `{"password":"` + cfg.RootUserPassword + `","totp":"` + code + `"}`, 403},
+		{"POST", "/api/v1/cas/nonexistent/keys/export", result.CSRFToken, `{"password":"wrong-password"}`, 403},
+		{"POST", "/api/v1/cas/nonexistent/keys/export", result.CSRFToken, `{"password":"` + cfg.RootUserPassword + `"}`, 404},
 		{"POST", "/api/v1/auth/logout", result.CSRFToken, "", 204},
 		{"GET", "/api/v1/auth/session", "", "", 401},
 	} {
@@ -494,26 +496,17 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='locked',failed_login_count=5,
-        locked_until=now()+interval '15 minutes' WHERE id=$1`, user.ID); err != nil {
+	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='locked',failed_login_count=5,locked_until=now()+interval '15 minutes' WHERE id=$1`, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	locked := login(cfg.RootUserPassword, code)
+	locked := login(cfg.RootUserPassword)
 	if locked.Code != http.StatusUnauthorized || !strings.Contains(locked.Body.String(), `"code":"account_locked"`) || locked.Header().Get("Retry-After") == "" {
-		t.Fatalf("valid password during lock was not diagnosed: %d %s", locked.Code, locked.Body.String())
+		t.Fatal("valid password during lock was not diagnosed")
 	}
-	if wrong := login("wrong-password", code); strings.Contains(wrong.Body.String(), `"code":"account_locked"`) {
-		t.Fatal("lock status was revealed without a valid password")
+	if wrong := login("wrong-password"); strings.Contains(wrong.Body.String(), `"code":"account_locked"`) {
+		t.Fatal("lock status revealed without a valid password")
 	}
-	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='active',failed_login_count=0,
-        locked_until=NULL,root_totp_last_step=$2 WHERE id=$1`, user.ID, time.Now().Unix()/30+100); err != nil {
-		t.Fatal(err)
-	}
-	future := login(cfg.RootUserPassword, code)
-	if future.Code != http.StatusServiceUnavailable || !strings.Contains(future.Body.String(), `"code":"totp_clock_behind"`) {
-		t.Fatalf("valid code blocked by future counter reported a bad password: %d %s", future.Code, future.Body.String())
-	}
-	if _, err := data.Pool().Exec(ctx, `UPDATE users SET root_totp_last_step=$2 WHERE id=$1`, user.ID, user.TOTPLastStep); err != nil {
+	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='active',failed_login_count=0,locked_until=NULL WHERE id=$1`, user.ID); err != nil {
 		t.Fatal(err)
 	}
 }

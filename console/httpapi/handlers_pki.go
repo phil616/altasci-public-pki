@@ -93,15 +93,14 @@ func (s *Server) importCA(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exportCAKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Password string `json:"password"`
-		TOTP     string `json:"totp"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.verifyRootStepUp(r, input.Password, input.TOTP); err != nil {
+	if err := s.verifyRootPassword(r, input.Password); err != nil {
 		_ = s.audit(r, "ca.key.export", "certificate_authority", &id, "denied", nil)
-		problem(w, http.StatusForbidden, "step_up_failed", "Fresh password and TOTP authentication are required")
+		problem(w, http.StatusForbidden, "password_verification_failed", "The current super administrator password is required")
 		return
 	}
 	key, err := s.pki.ExportCAKey(r.Context(), id)

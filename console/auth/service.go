@@ -1,10 +1,9 @@
-// Package auth implements local password/TOTP credentials and
+// Package auth implements local password credentials and
 // server-side session authentication.
 package auth
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -20,7 +19,6 @@ const CookieName = "__Host-pki_session"
 const DevelopmentCookieName = "pki_session"
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
-var ErrSecondFactorRequired = errors.New("second factor required")
 var ErrInvalidCSRF = errors.New("invalid CSRF token")
 
 type AccountLockedError struct{ Until time.Time }
@@ -38,7 +36,6 @@ type Service struct {
 type LoginInput struct {
 	Login     string
 	Password  string
-	TOTP      string
 	IP        string
 	UserAgent string
 }
@@ -75,7 +72,7 @@ func (s *Service) BootstrapRoot(ctx context.Context) (store.User, error) {
 		matches, verifyErr := security.VerifyPassword(s.config.RootUserPassword, existing.PasswordHash)
 		emailMatches := existing.Email != nil && strings.EqualFold(*existing.Email, s.config.RootUserEmail)
 		if verifyErr == nil && matches && emailMatches && existing.Status != "disabled" {
-			return s.synchronizeRootTOTP(ctx, existing.ID)
+			return existing, nil
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.User{}, err
@@ -84,20 +81,11 @@ func (s *Service) BootstrapRoot(ctx context.Context) (store.User, error) {
 	if err != nil {
 		return store.User{}, err
 	}
-	user, err := s.store.UpsertRoot(ctx, s.config.RootUserEmail, hash)
-	if err != nil {
-		return store.User{}, err
-	}
-	return s.synchronizeRootTOTP(ctx, user.ID)
-}
-
-func (s *Service) synchronizeRootTOTP(ctx context.Context, userID string) (store.User, error) {
-	digest := sha256.Sum256(s.config.RootUserTOTPSecret)
-	return s.store.SynchronizeRootTOTP(ctx, userID, digest[:])
+	return s.store.UpsertRoot(ctx, s.config.RootUserEmail, hash)
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
-	if len(input.Login) > 254 || len(input.Password) > 1024 || len(input.TOTP) > 6 {
+	if len(input.Login) > 254 || len(input.Password) > 1024 {
 		return LoginResult{}, invalidCredentials("input_limits", nil)
 	}
 	now := s.now()
@@ -120,29 +108,12 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		}
 		return LoginResult{}, s.loginFailure(ctx, user.ID, now, "password", verifyErr)
 	}
-	// Reveal lock information only after verifying the password. Do not consume
-	// a TOTP or extend the lock because a client retries during the lock period.
+	// Reveal lock information only after verifying the password. Retrying during
+	// the lock period must not extend the lock.
 	if locked {
 		return LoginResult{}, &AccountLockedError{Until: *user.LockedUntil}
 	}
 
-	var totpStep int64
-	if user.Role == "super_admin" {
-		digest := sha256.Sum256(s.config.RootUserTOTPSecret)
-		if len(user.RootTOTPSecretHash) > 0 && subtle.ConstantTimeCompare(user.RootTOTPSecretHash, digest[:]) != 1 {
-			return LoginResult{}, errors.New("root TOTP configuration changed; restart this process")
-		}
-		if input.TOTP == "" {
-			return LoginResult{}, ErrSecondFactorRequired
-		}
-		totpStep, err = security.VerifyTOTP(s.config.RootUserTOTPSecret, input.TOTP, now, user.TOTPLastStep)
-		if err != nil {
-			if errors.Is(err, security.ErrTOTPClockBehind) {
-				return LoginResult{}, err
-			}
-			return LoginResult{}, s.loginFailure(ctx, user.ID, now, "totp", err)
-		}
-	}
 	token, tokenHash, err := security.NewToken()
 	if err != nil {
 		return LoginResult{}, err
@@ -155,7 +126,7 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	if user.Role == "super_admin" {
 		idle, absolute = s.config.RootSessionIdle, s.config.RootSessionMax
 	}
-	sessionID, err := s.store.CreateAuthenticatedSession(ctx, user, totpStep, tokenHash, csrfHash, now.Add(idle), now.Add(absolute), now, input.IP, input.UserAgent)
+	sessionID, err := s.store.CreateAuthenticatedSession(ctx, user, tokenHash, csrfHash, now.Add(idle), now.Add(absolute), now, input.IP, input.UserAgent)
 	if err != nil {
 		if errors.Is(err, store.ErrCredentialStateChanged) {
 			return LoginResult{}, invalidCredentials("credential_state_changed", nil)
@@ -205,10 +176,6 @@ func FailureStage(err error) string {
 		return credential.stage
 	case errors.As(err, &locked):
 		return "account_locked"
-	case errors.Is(err, security.ErrTOTPClockBehind):
-		return "totp_clock_behind"
-	case errors.Is(err, ErrSecondFactorRequired):
-		return "second_factor_required"
 	default:
 		return "internal"
 	}

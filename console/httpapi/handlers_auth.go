@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strconv"
@@ -22,21 +20,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Login    string `json:"login"`
 		Password string `json:"password"`
-		TOTP     string `json:"totp,omitempty"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	result, err := s.auth.Login(r.Context(), auth.LoginInput{
-		Login: input.Login, Password: input.Password, TOTP: input.TOTP,
+		Login: input.Login, Password: input.Password,
 		IP: s.clientIP(r), UserAgent: r.UserAgent(),
 	})
 	if err != nil {
-		if errors.Is(err, auth.ErrSecondFactorRequired) {
-			_ = s.auditLogin(r, nil, "denied")
-			problem(w, http.StatusUnauthorized, "second_factor_required", "Super administrator login requires a fresh TOTP code (SHA-256, 6 digits, 30 seconds)")
-			return
-		}
 		s.logger.Warn("login denied", "request_id", requestID(r), "stage", auth.FailureStage(err), "error", err,
 			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail))
 		_ = s.auditLogin(r, nil, "denied")
@@ -47,18 +39,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", strconv.Itoa(retry))
 			problem(w, http.StatusUnauthorized, "account_locked", "Password verified, but the account is temporarily locked; wait for Retry-After before retrying")
 			return
-		case errors.Is(err, security.ErrTOTPClockBehind):
-			problem(w, http.StatusServiceUnavailable, "totp_clock_behind", "Current code verified, but stored TOTP state is ahead of the server clock; an administrator must check the clock and replay state")
-			return
-		case errors.Is(err, security.ErrTOTPReplayed):
-			problem(w, http.StatusUnauthorized, "totp_replayed", "This TOTP code has already been used; wait for a new code before retrying")
-			return
 		}
 		if !errors.Is(err, auth.ErrInvalidCredentials) {
 			problem(w, http.StatusServiceUnavailable, "authentication_unavailable", "Authentication is temporarily unavailable")
 			return
 		}
-		problem(w, http.StatusUnauthorized, "invalid_credentials", "Login credentials or required second factors are invalid")
+		problem(w, http.StatusUnauthorized, "invalid_credentials", "Username or password is invalid")
 		return
 	}
 	if err := s.auditLogin(r, &result.User, "success"); err != nil {
@@ -263,30 +249,25 @@ func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// verifyRootStepUp requires a fresh password and non-replayed TOTP code.
-func (s *Server) verifyRootStepUp(r *http.Request, password, code string) error {
+// verifyRootPassword confirms the current password for a sensitive operation.
+func (s *Server) verifyRootPassword(r *http.Request, password string) error {
 	p := principal(r)
 	if p.User.Role != "super_admin" {
 		return errors.New("super administrator is required")
 	}
-	if allowed, _ := s.allowRequest("step-up:"+p.User.ID, 5, time.Minute); !allowed {
-		return errors.New("too many step-up attempts; retry later")
+	if allowed, _ := s.allowRequest("password-confirmation:"+p.User.ID, 5, time.Minute); !allowed {
+		return errors.New("too many password confirmation attempts; retry later")
 	}
 	fresh, err := s.store.UserByID(r.Context(), p.User.ID)
 	if err != nil {
 		return err
 	}
-	digest := sha256.Sum256(s.config.RootUserTOTPSecret)
-	if len(fresh.RootTOTPSecretHash) > 0 && subtle.ConstantTimeCompare(fresh.RootTOTPSecretHash, digest[:]) != 1 {
-		return errors.New("root TOTP configuration changed; restart this process")
+	if len(password) == 0 || len(password) > 1024 {
+		return errors.New("invalid password")
 	}
 	ok, err := security.VerifyPassword(password, fresh.PasswordHash)
 	if err != nil || !ok {
 		return errors.New("invalid password")
 	}
-	step, err := security.VerifyTOTP(s.config.RootUserTOTPSecret, code, time.Now(), fresh.TOTPLastStep)
-	if err != nil {
-		return err
-	}
-	return s.store.AcceptRootStepUp(r.Context(), fresh.ID, fresh.PasswordHash, fresh.RootTOTPSecretHash, step)
+	return s.store.VerifyRootPasswordSnapshot(r.Context(), fresh.ID, fresh.PasswordHash)
 }

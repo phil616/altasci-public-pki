@@ -18,8 +18,7 @@ requests, keeps the CSRF token in browser local storage (or memory if storage is
 blocked), and adds a fresh idempotency key to retry-sensitive mutations. With
 storage blocked, reloading requires a fresh login because `/auth/session` does
 not reissue a CSRF token. Login confirms the cookie through `/auth/session`
-before showing the console. The TOTP field is always visible; only root requires
-it (SHA-256, six digits, 30 seconds).
+before showing the console. All account roles sign in with a username/email and password.
 
 From this directory (versions come from `package.json` and `package-lock.json`):
 
@@ -43,7 +42,7 @@ For development, start the backend on port 8080 with
 and `PUBLIC_BASE_URL=http://pki.localhost:5173`, plus all required credentials and database
 configuration. Vite serves port 5173 and proxies API/publication paths while preserving Host.
 Use the configured hostname to open the appropriate surface. Development still requires
-password/TOTP and CSRF. See [application setup](../doc/pki-console/README.md).
+password and CSRF. See [application setup](../doc/pki-console/README.md).
 
 `npm run build` builds static files only. `npm run preview` serves port 4173 without
 an API proxy; it is a static preview, not a working production deployment.

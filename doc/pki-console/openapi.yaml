@@ -5,7 +5,7 @@ info:
   description: |
     Authenticated enterprise PKI management and public certificate-status APIs.
     Clients establish a local session with /auth/login using their username/email
-    and password. Super administrators also provide an RFC 6238 SHA-256 TOTP code.
+    and password, uniformly for super administrators, operators and ordinary users.
     Subsequent requests use the HttpOnly session cookie; unsafe requests also
     require the X-CSRF-Token returned at login. No external identity service is required.
     Invalid sessions return 401; invalid CSRF tokens return 403 (csrf_failed);
@@ -13,7 +13,7 @@ info:
     Independent Signing public endpoints instead use instance-scoped Bearer credentials.
     This separate CSR API is not ACME and does not perform domain-control challenges.
 
-    Contract verified against source on 2026-11-15; domains are examples. The info.version
+    Contract verified against source on 2026-11-16; domains are examples. The info.version
     identifies this API contract, not the deployed binary version from /version. JSON input
     rejects unknown fields and is limited to 1 MiB. Byte limits in the implementation
     apply to UTF-8 data, including passwords and idempotency keys. Lists may contain
@@ -44,13 +44,10 @@ paths:
       tags: [Authentication]
       operationId: login
       description: |
-        Establishes a local session. Super administrators must also supply a fresh SHA-256 TOTP code.
-        After a correct root password, an absent TOTP returns 401 second_factor_required without
-        increasing the account failure counter. Wrong passwords or invalid codes return
-        401 invalid_credentials and count towards account lockout; IP rate limits apply to all attempts.
-        After password verification, 401 account_locked includes Retry-After; 401 totp_replayed
-        identifies a used code. A valid current code blocked by a future replay counter returns
-        503 totp_clock_behind without incrementing credential failures. Wrong passwords do not reveal lock status.
+        Establishes a local session using only username/email and password for every role.
+        Invalid credentials return 401 invalid_credentials; known-account password failures count towards lockout.
+        After password verification, 401 account_locked includes Retry-After.
+        All attempts are subject to IP rate limits; locked retries do not extend the lock.
       security: []
       requestBody:
         required: true
@@ -551,10 +548,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [password, totp]
+              required: [password]
               properties:
                 password: {type: string, writeOnly: true}
-                totp: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
               additionalProperties: false
       responses:
         '200':
@@ -571,8 +567,8 @@ paths:
         '401': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
-      description: Super administrator re-enters the current password and a fresh unused TOTP. Not idempotent. Step-up
-        failure or its per-user rate limit returns 403.
+      description: Super administrator confirms the current password. Not idempotent. Password verification
+        failure or its per-user rate limit returns 403 password_verification_failed.
   /cas/{id}/timestamp-authorities:
     get:
       tags: [Timestamping]
@@ -1849,8 +1845,7 @@ components:
         password:
           type: string
           writeOnly: true
-          description: At most 1024 UTF-8 bytes; super administrator additionally requires TOTP.
-        totp: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+          description: At most 1024 UTF-8 bytes. All account roles use password authentication.
     LoginResponse:
       type: object
       required: [user, csrf_token, expires_at]

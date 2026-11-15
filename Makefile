@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := pki-console
+
 VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null | tr -d '[:alpha:]')
 LDFLAGS := "-s -w -X github.com/cloudflare/cfssl/cli/version.version=$(VERSION)"
 PKI_CONSOLE_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -7,6 +9,7 @@ export GOFLAGS := -mod=vendor
 export GOPROXY := off
 GOVULNCHECK ?= govulncheck
 PYTHON ?= python3
+RELEASE_DIR ?= dist/pki-console-$(RELEASE_TAG)
 
 # Preserve the existing RFC 3161 large-OID/parser fixes when updating modules.
 .PHONY: vendor
@@ -39,18 +42,23 @@ pki-console-system: pki-console
 
 .PHONY: pki-console-check
 pki-console-check:
-	go test -p 1 ./console/... ./cmd/pki-console
-	go vet ./console/... ./cmd/pki-console
-	$(PYTHON) -B -m unittest discover -s scripts -p test_signing_client.py
 	cd web && npm ci --no-audit --no-fund
 	cd web && npm run check
+	go test -p 1 ./console/... ./cmd/pki-console ./web
+	go vet ./console/... ./cmd/pki-console ./web
+	$(PYTHON) -B -m unittest discover -s scripts -p test_signing_client.py
+
+.PHONY: pki-console-release
+pki-console-release: pki-console-web
+	@:$(call check_defined, RELEASE_TAG)
+	bash .github/scripts/build-release.sh "$(RELEASE_TAG)" "$(RELEASE_DIR)"
 
 .PHONY: pki-console-e2e
 pki-console-e2e:
 	cd web && npm ci --no-audit --no-fund
 	cd web && npm run test:e2e
 
-bin/pki-console: pki-console-web $(shell find console cmd/pki-console -type f -name '*.go') go.mod go.sum Makefile
+bin/pki-console: pki-console-web $(shell find console cmd/pki-console -type f -name '*.go') console/store/schema.sql go.mod go.sum Makefile
 	@mkdir -p $(dir $@)
 ifneq ($(and $(TARGETOS),$(TARGETARCH)),)
 	CGO_ENABLED=0 GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) go build -trimpath -ldflags $(PKI_CONSOLE_LDFLAGS) -o $@ ./cmd/pki-console

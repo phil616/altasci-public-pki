@@ -6,16 +6,7 @@ set -euo pipefail
 : "${GH_REPO:?Set GH_REPO}"
 : "${RELEASE_TAG:?Set RELEASE_TAG}"
 : "${EXPECTED_SHA:?Set EXPECTED_SHA}"
-python3 - "$RELEASE_TAG" <<'PY'
-import re
-import sys
-
-tag = sys.argv[1]
-match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?', tag)
-if not match or any(part.isdigit() and len(part) > 1 and part[0] == '0'
-                    for part in (match[4] or '').split('.')):
-    raise SystemExit('Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease (no leading zeroes or build metadata)')
-PY
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-release-tag.py" "$RELEASE_TAG"
 [[ $# -ge 2 ]] || { echo 'Expected directory and explicit asset names' >&2; exit 1; }
 asset_dir=$1
 shift
@@ -27,19 +18,25 @@ expected = sys.argv[1:]
 if len(set(expected)) != len(expected):
     raise SystemExit('Duplicate expected asset names')
 actual = sorted(p.name for p in pathlib.Path('.').iterdir())
-if actual != sorted(expected):
-    raise SystemExit(f'Asset set mismatch: expected={sorted(expected)}, actual={actual}')
+expected_files = sorted([*expected, 'SHA256SUMS'])
+if actual != expected_files:
+    raise SystemExit(f'Asset set mismatch: expected={expected_files}, actual={actual}')
 for name in expected:
     p = pathlib.Path(name)
     if p.name != name or p.is_symlink() or not p.is_file() or p.stat().st_size == 0:
         raise SystemExit(f'Invalid or empty asset: {name}')
-with open('SHA256SUMS', 'w', encoding='utf-8', newline='\n') as out:
-    for name in sorted(expected):
-        h = hashlib.sha256()
-        with open(name, 'rb') as src:
-            for chunk in iter(lambda: src.read(1024 * 1024), b''):
-                h.update(chunk)
-        out.write(f'{h.hexdigest()}  {name}\n')
+manifest = pathlib.Path('SHA256SUMS')
+if manifest.is_symlink() or not manifest.is_file():
+    raise SystemExit('Invalid checksum manifest')
+lines = []
+for name in sorted(expected):
+    h = hashlib.sha256()
+    with open(name, 'rb') as src:
+        for chunk in iter(lambda: src.read(1024 * 1024), b''):
+            h.update(chunk)
+    lines.append(f'{h.hexdigest()}  {name}\n')
+if manifest.read_text(encoding='utf-8') != ''.join(lines):
+    raise SystemExit('Build checksum manifest mismatch; refusing to publish')
 PY
 # API resolves annotated and lightweight tags to their source commit.
 actual_sha=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)

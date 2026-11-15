@@ -2,10 +2,7 @@ package config
 
 import (
 	"bytes"
-	"encoding/base32"
 	"encoding/base64"
-	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,35 +19,6 @@ func TestLoad(t *testing.T) {
 		c.DatabaseURL != "postgresql://pki_console:secret@db.example.com:5432/pki?sslmode=verify-full" ||
 		c.TSAMaxClockUncertainty != 5*time.Second {
 		t.Fatalf("unexpected config: %#v", c)
-	}
-}
-
-func TestCapturedEnvironmentUsesStartupParser(t *testing.T) {
-	setValidEnvironment(t)
-	values := make(map[string]string)
-	for _, entry := range os.Environ() {
-		key, value, _ := strings.Cut(entry, "=")
-		values[key] = value
-	}
-	for _, size := range []int{20, 21, 32} {
-		secret := bytes.Repeat([]byte{41}, size)
-		encoded := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret))
-		values["ROOT_USER_TOTP_SECRET"] = " " + encoded[:8] + " " + encoded[8:] + " "
-		t.Setenv("ROOT_USER_TOTP_SECRET", values["ROOT_USER_TOTP_SECRET"])
-		live, err := Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		captured, err := LoadFromEnvironment(values)
-		if err != nil || !reflect.DeepEqual(live, captured) || !bytes.Equal(captured.RootUserTOTPSecret, secret) {
-			t.Fatal("captured configuration and startup parser disagree")
-		}
-	}
-	// A diagnostic must not silently substitute its own environment for the
-	// target process's environment.
-	delete(values, "ROOT_USER_PASSWORD")
-	if _, err := LoadFromEnvironment(values); err == nil {
-		t.Fatal("missing target-process password was read from this process")
 	}
 }
 
@@ -150,7 +118,6 @@ func TestCanonicalOriginDefaultPort(t *testing.T) {
 func TestRejectsKnownExampleSecrets(t *testing.T) {
 	for _, tc := range []struct{ name, value string }{
 		{"ROOT_USER_PASSWORD", "replace-with-at-least-32-random-characters"},
-		{"ROOT_USER_TOTP_SECRET", base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(make([]byte, 20))},
 		{"PKI_MASTER_KEYS", `{"v1":"` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,7 +159,6 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv("CONSOLE_BASE_URL", "https://pki-console.example.com")
 	t.Setenv("ROOT_USER_EMAIL", "ROOT@example.com")
 	t.Setenv("ROOT_USER_PASSWORD", strings.Repeat("p", 32))
-	t.Setenv("ROOT_USER_TOTP_SECRET", base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes.Repeat([]byte{1}, 20)))
 	t.Setenv("PKI_MASTER_KEY_ACTIVE_ID", "v1")
 	t.Setenv("PKI_MASTER_KEYS", `{"v1":"`+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))+`"}`)
 	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.1/32,::1/128")

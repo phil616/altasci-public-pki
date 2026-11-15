@@ -1,6 +1,6 @@
 # 单体应用构建、检查与发布
 
-状态：当前指南；核对日期：2026-11-15。[GitHub Actions 工作流](../../.github/workflows/pki-console.yml)
+状态：当前指南；核对日期：2026-11-16。[GitHub Actions 工作流](../../.github/workflows/pki-console.yml)
 支持 PR 精简测试和版本 tag 自动发布 PKI-Console 单体应用。
 根目录 Dockerfile、`.goreleaser.yml`、`make release` 和原 CFSSL 安装目标不构建或发布当前单体应用。
 
@@ -18,38 +18,43 @@ PR 更新会取消同一 PR 的旧运行。PR 不发布，不使用发布凭证�
 为了控制耗时，自动检查不启动 PostgreSQL 或 Playwright，不额外执行 race、独立 lint/vet、
 漏洞数据库扫描或文档检查；未配置数据库的集成测试会跳过。它不替代下述完整检查和上线验收。
 
-推送 `vMAJOR.MINOR.PATCH` tag（例如 `v1.2.3`）或预发布 tag（例如 `v1.2.3-rc.1`）后，
+推送 `vMAJOR.MINOR.PATCH` tag（例如 `v1.0.0`）或预发布 tag（例如 `v1.0.0-rc.1`）后，
 先执行同样的检查，再使用 [打包脚本](../../.github/scripts/build-release.sh) 构建两种 Linux 架构。
 版本号和纯数字预发布段不接受前导零，不支持 `+build` 元数据；其他以 `v` 开头的 tag 会在打包时失败。
 tag 指向的提交必须包含本工作流；发布过程不自动创建 tag。
 
 ```sh
 # 在已提交且核验过的版本提交上执行；将版本替换为本次实际版本。
-git tag -a v1.2.3 -m 'Release v1.2.3'
-git push origin refs/tags/v1.2.3
+git tag -a v1.0.0 -m 'Release v1.0.0'
+git push GITHUB_REMOTE refs/tags/v1.0.0
 ```
+
+`GITHUB_REMOTE` 替换为启用了 Actions 的 GitHub 仓库远端名称；先用 `git remote -v` 核对。
+推送到其他 Git 托管服务不会运行 GitHub Actions。本指南的 tag 命令属于实际发布操作，
+本地构建不会创建或推送 tag。
 
 每个版本提供三个 Release 附件：
 
 | 附件 | 内容 |
 | --- | --- |
-| `pki-console-v1.2.3-linux-amd64.tar.gz` | Linux amd64 静态 Go 二进制及部署示例 |
-| `pki-console-v1.2.3-linux-arm64.tar.gz` | Linux arm64 静态 Go 二进制及部署示例 |
+| `pki-console-v1.0.0-linux-amd64.tar.gz` | Linux amd64 静态 Go 二进制及部署示例 |
+| `pki-console-v1.0.0-linux-arm64.tar.gz` | Linux arm64 静态 Go 二进制及部署示例 |
 | `SHA256SUMS` | 两个压缩包的 SHA-256 校验和 |
 
 压缩包包含 `pki-console`（已内嵌前端）、`LICENSE`、`.env.example`、`pki-console.service`、
-`nginx.conf.example` 和 `signing-client.py`。部署只运行一个应用程序，仍需外部 PostgreSQL 和 Nginx；
+`nginx.conf.example`、`signing-client.py`、唯一的 `schema.sql` 和独立安装说明 `README.md`。部署只运行一个应用程序，仍需外部 PostgreSQL 和 Nginx；
 部署前修改示例配置并准备运行密钥。核对校验和后解压对应架构：
 
 ```sh
 # 将两个压缩包和 SHA256SUMS 下载到同一目录。
 sha256sum -c SHA256SUMS
-tar -xzf pki-console-v1.2.3-linux-amd64.tar.gz
+tar -xzf pki-console-v1.0.0-linux-amd64.tar.gz
 ```
 
 构建 job 仅有读权限，通过同一次运行的 Actions artifact 传递产物。
 只有 `Publish release` job 获得 `contents: write`，使用自动提供的 `GITHUB_TOKEN`，不需要额外 PAT。
-[发布脚本](../../.github/scripts/publish-release.sh) 核对附件清单和远端 tag 对应的提交，
+[打包脚本](../../.github/scripts/build-release.sh) 生成校验和；
+[发布脚本](../../.github/scripts/publish-release.sh) 验证既有校验和、附件清单和远端 tag 对应的提交，
 先创建 draft 并上传全部附件，核对服务器上的文件名、大小及可用的 SHA-256，再正式发布。
 正式版标记为 Latest，预发布标记为 prerelease 且不设为 Latest；发布说明由 GitHub 自动生成。
 校验和用于校验文件完整性，此流程未生成独立的构建来源证明。
@@ -87,8 +92,33 @@ Google Chrome，在浏览器边界模拟 API，不代替数据库测试。
 当前结果需重新运行确认。
 
 `make pki-console` 内嵌前端，生产只需二进制。交叉编译：
-`make pki-console TARGETOS=linux TARGETARCH=arm64`。不要用未指定目标的 `make`
-替代 Console 构建。正式环境及 TSA 使用 Linux。
+`make pki-console TARGETOS=linux TARGETARCH=arm64`。无参数 `make` 默认构建 Console；
+`make all` 等原 CFSSL 目标保留各自含义。正式环境及 TSA 使用 Linux。
+
+## 本地生成正式发行包
+
+```sh
+make pki-console-release RELEASE_TAG=v1.0.0
+# 自定义输出位置：添加 RELEASE_DIR=/path/to/new-output-directory
+```
+
+校验清单中的路径相对于输出目录，在该目录执行：
+
+```sh
+(cd dist/pki-console-v1.0.0 && sha256sum --check SHA256SUMS)
+```
+
+`pki-console-release` 构建前端，再调用与 CI 相同的打包脚本生成两个压缩包及校验清单。
+输出目录必须尚不存在，防止混入以前的产物；本地打包不自动测试、不访问 GitHub，
+应先完成上面的应用检查。若前端已构建，也可从仓库根目录直接调用：
+
+```sh
+bash .github/scripts/build-release.sh v1.0.0 /tmp/pki-console-v1.0.0
+```
+
+首版只支持 [空库初始化](schema-initialization.md)。发布前分别验证内嵌 SQL 的
+`migrate` 和发行包 `schema.sql` 的手动初始化、重复应用命令不改变数据、未知非空库被拒绝，
+以及程序启动后的版本、健康、密码登录与公开接口。手动 SQL 方式必须使用单个事务。
 
 ## 依赖维护
 
@@ -104,7 +134,7 @@ Google Chrome，在浏览器边界模拟 API，不代替数据库测试。
 `/api/v1/version` 核对。自动发布将触发 tag 原样写入此版本字段。
 
 交付二进制及对应文档、配置示例，环境密钥通过独立渠道配置。按
-[部署指南](production-deployment.md) 备份、迁移、替换程序、重启和验收。
+[部署指南](production-deployment.md) 备份、核对基线、替换程序、重启和验收。
 回退前核实 schema 与新数据兼容性，不能只恢复旧二进制。
 
 Go 工具链升级后，漏洞扫描器也需使用能解析对应 Go 语法的版本；用 `go version -m`

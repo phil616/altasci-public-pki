@@ -7,7 +7,7 @@ import type { User } from '@/types';
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  login: (input: { login: string; password: string; totp?: string }) => Promise<User>;
+  login: (input: { login: string; password: string }) => Promise<User>;
   logout: () => Promise<void>;
 }
 

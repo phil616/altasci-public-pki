@@ -3,7 +3,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -36,7 +35,6 @@ type Config struct {
 	ConsoleHostname        string
 	RootUserEmail          string
 	RootUserPassword       string
-	RootUserTOTPSecret     []byte
 	MasterKeyActiveID      string
 	MasterKeys             map[string][]byte
 	SessionIdle            time.Duration
@@ -51,16 +49,7 @@ type Config struct {
 // Load reads configuration from environment variables and fails closed when a
 // security-sensitive setting is absent or malformed.
 func Load() (Config, error) {
-	return load(os.Getenv)
-}
-
-// LoadFromEnvironment applies the exact startup parser to a captured process
-// environment without changing this process's environment or printing secrets.
-func LoadFromEnvironment(values map[string]string) (Config, error) {
-	return load(func(name string) string { return values[name] })
-}
-
-func load(getenv func(string) string) (Config, error) {
+	getenv := os.Getenv
 	var err error
 	c := Config{
 		ListenAddress:          envDefault(getenv("PKI_LISTEN_ADDRESS"), defaultListenAddress),
@@ -96,14 +85,6 @@ func load(getenv func(string) string) (Config, error) {
 		c.ConsoleHostname = c.ConsoleBaseURL.Hostname()
 	}
 
-	secret := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(getenv("ROOT_USER_TOTP_SECRET")), " ", ""))
-	if secret != "" {
-		c.RootUserTOTPSecret, err = base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
-		if err != nil {
-			return Config{}, fmt.Errorf("ROOT_USER_TOTP_SECRET must be unpadded base32: %w", err)
-		}
-	}
-
 	if c.MasterKeys, err = parseMasterKeys(getenv("PKI_MASTER_KEYS")); err != nil {
 		return Config{}, err
 	}
@@ -119,7 +100,6 @@ func (c Config) Validate() error {
 		"CONSOLE_BASE_URL":         urlString(c.ConsoleBaseURL),
 		"ROOT_USER_EMAIL":          c.RootUserEmail,
 		"ROOT_USER_PASSWORD":       c.RootUserPassword,
-		"ROOT_USER_TOTP_SECRET":    string(c.RootUserTOTPSecret),
 		"PKI_MASTER_KEY_ACTIVE_ID": c.MasterKeyActiveID,
 	} {
 		if value == "" {
@@ -160,12 +140,6 @@ func (c Config) Validate() error {
 		if (databaseIP == nil || !databaseIP.IsLoopback()) && databaseURL.Query().Get("sslmode") != "verify-full" {
 			return errors.New("remote DATABASE_URL must explicitly use sslmode=verify-full")
 		}
-	}
-	if len(c.RootUserTOTPSecret) < 20 {
-		return errors.New("ROOT_USER_TOTP_SECRET must contain at least 160 bits")
-	}
-	if bytes.Equal(c.RootUserTOTPSecret, make([]byte, len(c.RootUserTOTPSecret))) {
-		return errors.New("ROOT_USER_TOTP_SECRET must not use the all-zero example secret")
 	}
 	address, emailErr := mail.ParseAddress(c.RootUserEmail)
 	if emailErr != nil || address.Address != c.RootUserEmail || len(c.RootUserEmail) > 254 {

@@ -1,4 +1,8 @@
--- +goose Up
+-- PKI-Console initial schema. Requires PostgreSQL 18+ and an empty public schema.
+-- Normally applied by: pki-console migrate
+-- Manual alternative: psql --single-transaction --set=ON_ERROR_STOP=1 --file=schema.sql
+-- Do not apply to a database initialized by a pre-release version.
+SET LOCAL search_path TO public, pg_catalog;
 
 CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT uuidv7(),
@@ -9,7 +13,6 @@ CREATE TABLE users (
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled', 'locked')),
     failed_login_count integer NOT NULL DEFAULT 0 CHECK (failed_login_count >= 0),
     locked_until timestamptz,
-    root_totp_last_step bigint NOT NULL DEFAULT 0,
     password_changed_at timestamptz NOT NULL DEFAULT now(),
     last_login_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -64,7 +67,7 @@ CREATE TABLE certificate_authorities (
     chain_pem text NOT NULL,
     not_before timestamptz NOT NULL,
     not_after timestamptz NOT NULL,
-    path_length integer NOT NULL DEFAULT 0 CHECK (path_length >= 0),
+    path_length integer NOT NULL DEFAULT 0 CHECK (path_length >= -1),
     crl_url text,
     ocsp_url text,
     issuer_url text,
@@ -77,11 +80,14 @@ CREATE TABLE certificate_authorities (
     UNIQUE (id, serial)
 );
 
+CREATE UNIQUE INDEX certificate_authorities_certificate_uq
+    ON certificate_authorities (sha256(certificate_pem::bytea));
+
 CREATE TABLE ca_key_versions (
     id uuid PRIMARY KEY DEFAULT uuidv7(),
     ca_id uuid NOT NULL REFERENCES certificate_authorities(id) ON DELETE RESTRICT,
     version integer NOT NULL CHECK (version > 0),
-    algorithm text NOT NULL CHECK (algorithm IN ('RSA-4096', 'RSA-3072', 'ECDSA-P384', 'ECDSA-P256')),
+    algorithm text NOT NULL CHECK (algorithm IN ('RSA-2048', 'RSA-3072', 'RSA-4096', 'ECDSA-P256', 'ECDSA-P384')),
     public_key_fingerprint bytea NOT NULL CHECK (octet_length(public_key_fingerprint) = 32),
     encrypted_pkcs8 bytea NOT NULL,
     nonce bytea NOT NULL CHECK (octet_length(nonce) = 12),
@@ -138,7 +144,6 @@ CREATE TABLE ca_grants (
     PRIMARY KEY (ca_id, user_id, permission)
 );
 
--- +goose StatementBegin
 CREATE FUNCTION reject_root_ca_grant() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM certificate_authorities WHERE id = NEW.ca_id AND kind = 'root') THEN
@@ -149,7 +154,6 @@ BEGIN
     END IF;
     RETURN NEW;
 END $$;
--- +goose StatementEnd
 CREATE TRIGGER ca_grants_validate BEFORE INSERT OR UPDATE ON ca_grants
 FOR EACH ROW EXECUTE FUNCTION reject_root_ca_grant();
 
@@ -184,7 +188,6 @@ CREATE TABLE request_approvals (
     decided_at timestamptz NOT NULL DEFAULT now()
 );
 
--- +goose StatementBegin
 CREATE FUNCTION reject_self_approval() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM certificate_requests WHERE id = NEW.request_id AND requester_id = NEW.approver_id) THEN
@@ -192,7 +195,6 @@ BEGIN
     END IF;
     RETURN NEW;
 END $$;
--- +goose StatementEnd
 CREATE TRIGGER request_approvals_no_self BEFORE INSERT OR UPDATE ON request_approvals
 FOR EACH ROW EXECUTE FUNCTION reject_self_approval();
 
@@ -319,16 +321,13 @@ CREATE INDEX audit_events_actor_idx ON audit_events (actor_user_id, occurred_at 
 CREATE INDEX audit_events_resource_idx ON audit_events (resource_type, resource_id, occurred_at DESC);
 CREATE UNIQUE INDEX audit_events_hash_uq ON audit_events (occurred_at, event_hash);
 
--- +goose StatementBegin
 CREATE FUNCTION deny_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'audit events are append-only';
 END $$;
--- +goose StatementEnd
 CREATE TRIGGER audit_events_immutable BEFORE UPDATE OR DELETE ON audit_events
 FOR EACH ROW EXECUTE FUNCTION deny_audit_mutation();
 
--- +goose StatementBegin
 CREATE FUNCTION pki_create_audit_partition(month_start date) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
     partition_name text := 'audit_events_' || to_char(month_start, 'YYYY_MM');
@@ -337,31 +336,115 @@ BEGIN
     EXECUTE format('CREATE TABLE IF NOT EXISTS %I PARTITION OF audit_events FOR VALUES FROM (%L) TO (%L)',
                    partition_name, month_start, month_end);
 END $$;
--- +goose StatementEnd
 
 SELECT pki_create_audit_partition(date_trunc('month', current_date)::date);
+SELECT pki_create_audit_partition((date_trunc('month', current_date) + interval '1 month')::date);
 
--- +goose Down
-DROP FUNCTION IF EXISTS pki_create_audit_partition(date);
-DROP TABLE IF EXISTS audit_events CASCADE;
-DROP TABLE IF EXISTS audit_chain_heads;
-DROP TABLE IF EXISTS ocsp_responses;
-DROP TABLE IF EXISTS crls;
-DROP TABLE IF EXISTS revocations;
-DROP TABLE IF EXISTS leaf_key_artifacts;
-DROP TABLE IF EXISTS certificates;
-DROP TABLE IF EXISTS issuance_jobs;
-DROP TRIGGER IF EXISTS request_approvals_no_self ON request_approvals;
-DROP FUNCTION IF EXISTS reject_self_approval();
-DROP TABLE IF EXISTS request_approvals;
-DROP TABLE IF EXISTS certificate_requests;
-DROP TRIGGER IF EXISTS ca_grants_validate ON ca_grants;
-DROP FUNCTION IF EXISTS reject_root_ca_grant();
-DROP TABLE IF EXISTS ca_grants;
-DROP TABLE IF EXISTS signing_profiles;
-DROP TABLE IF EXISTS ocsp_responders;
-DROP TABLE IF EXISTS ca_key_versions;
-DROP TABLE IF EXISTS certificate_authorities;
-DROP TABLE IF EXISTS idempotency_keys;
-DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS users;
+CREATE TABLE timestamp_authorities (
+    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    ca_id uuid NOT NULL REFERENCES certificate_authorities(id) ON DELETE RESTRICT,
+    slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'),
+    name text NOT NULL,
+    policy_oid text NOT NULL CHECK (policy_oid ~ '^[0-2](\.[0-9]+)+$'),
+    certificate_pem text NOT NULL,
+    chain_pem text NOT NULL,
+    encrypted_pkcs8 bytea NOT NULL,
+    nonce bytea NOT NULL CHECK (octet_length(nonce) = 12),
+    kek_id text NOT NULL,
+    allowed_hashes text[] NOT NULL DEFAULT ARRAY['SHA-256', 'SHA-384', 'SHA-512']::text[],
+    not_before timestamptz NOT NULL,
+    not_after timestamptz NOT NULL,
+    status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'retired', 'revoked')),
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (not_after > not_before),
+    CHECK (cardinality(allowed_hashes) > 0),
+    CHECK (allowed_hashes <@ ARRAY['SHA-256', 'SHA-384', 'SHA-512']::text[])
+);
+CREATE INDEX timestamp_authorities_ca_idx ON timestamp_authorities (ca_id, created_at DESC);
+
+CREATE TABLE timestamp_tokens (
+    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    tsa_id uuid NOT NULL REFERENCES timestamp_authorities(id) ON DELETE RESTRICT,
+    serial numeric(50,0) NOT NULL CHECK (serial > 0),
+    hash_algorithm text NOT NULL CHECK (hash_algorithm IN ('SHA-256', 'SHA-384', 'SHA-512')),
+    message_imprint bytea NOT NULL CHECK (octet_length(message_imprint) IN (32, 48, 64)),
+    policy_oid text NOT NULL,
+    nonce text,
+    generated_at timestamptz NOT NULL,
+    accuracy_micros bigint NOT NULL CHECK (accuracy_micros >= 0),
+    token_sha256 bytea NOT NULL CHECK (octet_length(token_sha256) = 32),
+    token_der bytea NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT timestamp_tokens_tsa_serial_uq UNIQUE (tsa_id, serial),
+    UNIQUE (token_sha256)
+);
+CREATE INDEX timestamp_tokens_tsa_time_idx ON timestamp_tokens (tsa_id, generated_at DESC);
+CREATE INDEX timestamp_tokens_imprint_idx ON timestamp_tokens (hash_algorithm, message_imprint);
+
+-- Isolated signing tools intentionally have no foreign key to the managed PKI.
+CREATE TABLE signing_instances (
+    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    owner_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+    certificate_pem text NOT NULL,
+    chain_pem text NOT NULL,
+    encrypted_key bytea NOT NULL,
+    key_nonce bytea NOT NULL CHECK (octet_length(key_nonce)=12),
+    kek_id text NOT NULL,
+    policy jsonb NOT NULL,
+    enabled boolean NOT NULL DEFAULT true,
+    crl_der bytea,
+    crl_next_update timestamptz,
+    crl_number bigint NOT NULL DEFAULT 0 CHECK (crl_number>=0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX signing_instances_owner_idx ON signing_instances(owner_id, id);
+CREATE TABLE signing_credentials (
+    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    instance_id uuid NOT NULL REFERENCES signing_instances(id) ON DELETE RESTRICT,
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 128),
+    token_hash bytea NOT NULL UNIQUE CHECK (octet_length(token_hash)=32),
+    scopes text[] NOT NULL CHECK (cardinality(scopes)>0 AND scopes <@ ARRAY['issue','read','revoke']::text[]),
+    policy jsonb,
+    max_issuances integer NOT NULL CHECK (max_issuances BETWEEN 1 AND 1000000),
+    issued_count integer NOT NULL DEFAULT 0 CHECK (issued_count>=0 AND issued_count<=max_issuances),
+    rate_per_minute integer NOT NULL CHECK (rate_per_minute BETWEEN 1 AND 120),
+    rate_window timestamptz NOT NULL DEFAULT now(),
+    rate_count integer NOT NULL DEFAULT 0 CHECK (rate_count>=0),
+    expires_at timestamptz NOT NULL,
+    revoked_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(instance_id,id)
+);
+CREATE INDEX signing_credentials_instance_idx ON signing_credentials(instance_id,id);
+CREATE TABLE signing_certificates (
+    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    instance_id uuid NOT NULL REFERENCES signing_instances(id) ON DELETE RESTRICT,
+    credential_id uuid NOT NULL,
+    serial numeric(50,0) NOT NULL CHECK (serial>0),
+    certificate_pem text NOT NULL,
+    chain_pem text NOT NULL,
+    fingerprint_sha256 text NOT NULL,
+    not_before timestamptz NOT NULL,
+    not_after timestamptz NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash bytea NOT NULL CHECK (octet_length(request_hash)=32),
+    revoked_at timestamptz,
+    revocation_reason integer CHECK (revocation_reason BETWEEN 0 AND 10 AND revocation_reason<>7 AND revocation_reason<>8),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    FOREIGN KEY(instance_id,credential_id) REFERENCES signing_credentials(instance_id,id) ON DELETE RESTRICT,
+    UNIQUE(instance_id,serial),
+    UNIQUE(credential_id,idempotency_key)
+);
+CREATE INDEX signing_certificates_instance_idx ON signing_certificates(instance_id,id);
+
+-- Written last; all schema objects and this marker commit atomically.
+CREATE TABLE pki_schema (
+    id smallint PRIMARY KEY CHECK (id = 1),
+    baseline text NOT NULL CHECK (baseline = 'pki-console-1'),
+    initialized_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO pki_schema (id, baseline) VALUES (1, 'pki-console-1');

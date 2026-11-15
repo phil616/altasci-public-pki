@@ -33,7 +33,7 @@ export function AuthorityDetailPage() {
   const [timestampAuthorityOpen, setTimestampAuthorityOpen] = useState(false);
   const [profileForm] = Form.useForm<ProfileValues>();
   const [grantForm] = Form.useForm<{ user_id: string; permission: CAGrant['permission'] }>();
-  const [exportForm] = Form.useForm<{ password: string; totp: string }>();
+  const [exportForm] = Form.useForm<{ password: string }>();
   const [timestampAuthorityForm] = Form.useForm<TimestampAuthorityValues>();
 
   const profileMutation = useMutation({
@@ -48,7 +48,7 @@ export function AuthorityDetailPage() {
     onError: (error) => message.error(error.message),
   });
   const exportMutation = useMutation({
-    mutationFn: (values: { password: string; totp: string }) => consoleAPI.exportCAKey(id, values.password, values.totp),
+    mutationFn: (values: { password: string }) => consoleAPI.exportCAKey(id, values.password),
     onSuccess: () => { setExportOpen(false); exportForm.resetFields(); message.success('私钥已下载，请立即转移到安全介质'); },
     onError: (error) => message.error(error.message),
   });
@@ -162,7 +162,6 @@ export function AuthorityDetailPage() {
         <Paragraph type="danger">这是最高风险操作。响应不会缓存，操作会写入审计链；下载后请立即转移到受控安全介质。</Paragraph>
         <Form form={exportForm} layout="vertical" onFinish={(values) => exportMutation.mutate(values)} requiredMark={false}>
           <Form.Item name="password" label="重新输入超级管理员密码" tooltip="用于本次高风险操作的重新认证，不会被记录到日志。" rules={[{ required: true }]}><Input.Password autoComplete="current-password" /></Form.Item>
-          <Form.Item name="totp" label="新的六位 TOTP" tooltip="必须使用当前时间窗口内且从未用于其他敏感操作的验证码。" rules={[{ required: true }, { pattern: /^\d{6}$/ }]}><Input maxLength={6} inputMode="numeric" autoComplete="one-time-code" /></Form.Item>
         </Form>
       </Modal>
     </>

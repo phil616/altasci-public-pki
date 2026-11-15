@@ -1,6 +1,6 @@
 # 文档维护规范
 
-状态：当前规范；核对日期：2026-11-15。文档与代码在同一次变更中更新和评审。
+状态：当前规范；核对日期：2026-11-16。文档与代码在同一次变更中更新和评审。
 维护目标是可执行、可追溯，避免将设计愿望、历史现场和当前实现混在一起。
 
 ## 入口与状态
@@ -21,7 +21,7 @@
 | 环境变量、默认值与约束 | [config.go](../../console/config/config.go)、[.env.example](../../.env.example) |
 | 路由、认证、幂等与错误 | [server.go](../../console/httpapi/server.go)、同目录 handlers、[auth](../../console/auth/service.go) |
 | JSON 返回字段 | [models.go](../../console/store/models.go) 和处理函数中的响应构造 |
-| 数据结构和迁移兼容性 | [migrations](../../console/store/migrations)、[migrate.go](../../console/store/migrate.go) |
+| 初始数据结构和基线 | [schema.sql](../../console/store/schema.sql)、[migrate.go](../../console/store/migrate.go) |
 | CA、签发与导入校验 | [service.go](../../console/pki/service.go)、[import.go](../../console/pki/import.go) |
 | 独立签发策略、凭据与隔离 | [signing](../../console/signing)、[策略及接入](independent-signing.md) |
 | TSA 与时钟 | [tsa](../../console/tsa) |
@@ -61,7 +61,7 @@ make pki-console-docs PYTHON=/tmp/pki-console-docs-venv/bin/python
 ## 每次变更的复核
 
 修改接口时同时更新 OpenAPI 的请求、响应、错误和权限说明；区分 HTTP 错误和
-OCSP/TSA 协议内错误。修改 schema、密钥或部署流程时同时核对迁移、备份与回退限制。
+OCSP/TSA 协议内错误。修改 schema、密钥或部署流程时同时核对初始化、基线、备份与恢复限制。
 检查命令应说明前提、环境和副作用，尤其是数据库集成测试会清空测试库。
 
 运行文档检查及 [发布指南](release.md) 中与变更相关的应用验证。

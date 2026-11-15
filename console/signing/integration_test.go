@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -21,7 +20,6 @@ import (
 	"github.com/cloudflare/cfssl/console/pki"
 	"github.com/cloudflare/cfssl/console/security"
 	"github.com/cloudflare/cfssl/console/store"
-	"github.com/pressly/goose/v3"
 )
 
 func TestPostgresIndependentSigning(t *testing.T) {
@@ -362,19 +360,6 @@ func TestPostgresIndependentSigning(t *testing.T) {
 	nextPage, _, err := s.Certificates(ctx, owner.ID, instance.ID, cursor, 1)
 	if err != nil || len(nextPage) != 1 || nextPage[0].ID == page[0].ID {
 		t.Fatal("cursor repeated a certificate", err)
-	}
-	db, err := sql.Open("pgx", database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Target the signing migration explicitly, even when newer migrations exist.
-	downgradeErr := goose.DownToContext(ctx, db, "migrations", 3)
-	_ = db.Close()
-	if err := store.Migrate(ctx, database); err != nil {
-		t.Fatal(err)
-	}
-	if downgradeErr == nil {
-		t.Fatal("destructive downgrade accepted protected signing data")
 	}
 	if _, err = pool.Exec(ctx, `UPDATE users SET status='disabled' WHERE id=$1`, owner.ID); err != nil {
 		t.Fatal(err)

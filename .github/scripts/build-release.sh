@@ -6,23 +6,17 @@ release_tag=$1
 asset_dir=$2
 
 # vMAJOR.MINOR.PATCH with optional SemVer prerelease identifiers; no build metadata.
-python3 - "$release_tag" <<'PY'
-import re
-import sys
-
-tag = sys.argv[1]
-match = re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?', tag)
-if not match or any(part.isdigit() and len(part) > 1 and part[0] == '0'
-                    for part in (match[4] or '').split('.')):
-    raise SystemExit('Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease (no leading zeroes or build metadata)')
-PY
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-release-tag.py" "$release_tag"
 
 test -s web/dist/index.html
+mkdir -p -- "$(dirname "$asset_dir")"
 mkdir -- "$asset_dir"
 asset_dir=$(cd "$asset_dir" && pwd)
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 
+cp console/store/schema.sql "$staging/schema.sql"
+cp doc/pki-console/distribution-README.md "$staging/README.md"
 cp LICENSE .env.example doc/pki-console/pki-console.service \
   doc/pki-console/nginx.conf.example scripts/signing-client.py "$staging/"
 for arch in amd64 arm64; do
@@ -32,6 +26,8 @@ for arch in amd64 arm64; do
   test -s "$staging/pki-console"
   test -x "$staging/pki-console"
   tar -czf "$asset_dir/pki-console-${release_tag}-linux-${arch}.tar.gz" \
-    -C "$staging" pki-console LICENSE .env.example pki-console.service \
+    -C "$staging" pki-console README.md schema.sql LICENSE .env.example pki-console.service \
     nginx.conf.example signing-client.py
 done
+
+(cd "$asset_dir" && sha256sum pki-console-*.tar.gz > SHA256SUMS)

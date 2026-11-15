@@ -1,6 +1,6 @@
 # 单机部署：单体程序 + Nginx + PostgreSQL
 
-状态：当前指南；核对日期：2026-11-15。示例域名和路径需按实际环境替换。
+状态：当前指南；核对日期：2026-11-16。示例域名和路径需按实际环境替换。
 
 当前部署只运行一个 `pki-console` 程序，前端、API、认证和签发任务都在其中。
 外部 PostgreSQL 18+ 提供存储，Nginx 终止 HTTPS 并反代同机回环端口。
@@ -14,10 +14,11 @@ AIA、CRL、OCSP 地址可用。应用端口无需对外开放。
 
 生产主机使用 Linux，TSA 的内核时钟健康检查仅在 Linux 实现。
 数据库要求 PostgreSQL 18+（当前 schema 使用 `uuidv7()`），编码使用 UTF-8。
-使用现有平台创建数据库和独立角色，让该角色拥有应用 schema 的建表、函数与分区权限。
+使用现有平台创建专用空数据库和独立角色，确保 `public` 为空，
+让该角色拥有应用 schema 的建表、函数与分区权限。
 当前审计写入会创建月分区；备份和恢复应包含这些对象。
 
-构建机安装 `go.mod` 指定的 Go 工具链，以及 Node.js 20.19+ / npm：
+构建机安装 `go.mod` 指定的 Go 工具链，以及 Node.js 24 / `web/package.json` 指定的 npm：
 
 ```sh
 make pki-console
@@ -26,7 +27,8 @@ make pki-console
 install -o root -g root -m 0755 bin/pki-console /usr/local/bin/pki-console
 ```
 
-生成后只分发二进制，不必复制 `web/dist`。不含前端的手工构建在 `serve` 启动时会报出
+也可下载正式发行包，按包内 `README.md` 安装。发行包附带 SQL 和部署模板，
+无需在生产主机编译。运行时不必复制 `web/dist`。不含前端的手工构建在 `serve` 启动时会报出
 重新构建提示。生产机无需 Node.js、npm 或独立静态文件服务器。
 
 ## 2. 配置本地认证和数据库
@@ -42,25 +44,22 @@ sudo install -o root -g pki-console -m 0640 .env.example /etc/pki-console/pki-co
 生产监听保持 `127.0.0.1:8080`，可信代理设置为同机 Nginx 的回环 CIDR。
 所有配置说明见 [README.md](README.md)。
 
-仅在首次新建部署时生成凭据；已有部署必须保留原 `PKI_MASTER_KEYS`、active ID 和
-TOTP secret，避免失去现有密钥解密能力或需要重新绑定验证器。生成命令：
+仅在首次新建部署时生成凭据；已有部署必须保留原 `PKI_MASTER_KEYS` 和 active ID，
+避免失去现有密钥解密能力。生成命令：
 
 ```sh
 # ROOT_USER_PASSWORD
 openssl rand -hex 32
 # PKI_MASTER_KEYS 中的每个值
 openssl rand -base64 32
-# ROOT_USER_TOTP_SECRET
-python3 -c 'import base64,secrets; print(base64.b32encode(secrets.token_bytes(20)).decode().rstrip("="))'
 ```
 
-在兼容的验证器中添加 TOTP：算法 **SHA-256**、6 位、周期 30 秒（不是常见的 SHA-1 默认值）。
-使用 `otpauth` 导入时必须明确 `algorithm=SHA256&digits=6&period=30`，导入后确认应用实际使用 SHA-256。
-URI 含有验证器密钥，应只在受控本地环境生成和导入。URI 形式见 [Key URI 格式](https://github.com/google/google-authenticator/wiki/Key-Uri-Format)。
-超级管理员用环境文件中的邮箱、密码和动态验证码登录。普通用户和运维账户继续使用
-原本的本地用户名/邮箱和密码，无需外部身份提供方。
+所有角色均使用本地用户名/邮箱和密码登录。超级管理员使用环境文件中的邮箱和密码。
+账户初始化与客户端请求示例见 [密码认证](password-authentication.md)。
 
-## 3. 迁移与 systemd
+## 3. 初始化与 systemd
+
+环境示例使用单引号保存字面量；下面通过 shell 加载，避免在值中引入 shell 展开语法。
 
 ```sh
 sudo -u pki-console env -i sh -c 'set -a; . /etc/pki-console/pki-console.env; exec /usr/local/bin/pki-console migrate'
@@ -70,10 +69,12 @@ sudo systemctl enable --now pki-console
 sudo systemctl status pki-console --no-pager
 ```
 
-迁移是独立命令，不在 `serve` 启动时自动执行。`serve` 自带签发 worker，无需另外安装
+初始化是独立命令，不在 `serve` 启动时自动执行。唯一 SQL 为
+[schema.sql](../../console/store/schema.sql)，只面向空库；重复执行应用命令不会重置数据。
+事务、基线检查和手动 SQL 方式见 [数据库初始化](schema-initialization.md)。`serve` 自带签发 worker，无需另外安装
 worker 服务。TSA 继续要求 Linux 系统时间同步；生产模式下 NTP 未同步或误差过大会拒绝签发时间戳。
 额外的 `worker` 进程不再同步 root 凭据，避免其环境覆盖管理服务的身份配置。
-登录故障优先按 [认证诊断](authentication-diagnostics.md) 检查运行进程的实际环境及重放/锁定状态。
+登录故障按 [密码认证](password-authentication.md) 检查运行进程的实际环境和锁定状态。
 
 ## 4. Nginx
 
@@ -117,45 +118,29 @@ curl --fail https://pki-console.example.com/login
 curl --fail https://pki.example.com/pki/v1/authorities
 ```
 
-浏览器打开管理域名，直接输入邮箱、密码和始终可见的 TOTP 字段。验证登录、会话、
+浏览器打开管理域名，输入用户名/邮箱和密码。验证登录、会话、
 CA 列表和普通账户权限；到公开域名检查 CA、证书精确查询、CRL/OCSP/TSA。
-使用一个新验证码测试私钥导出；登录时用过的验证码不能再次用于导出。
+使用当前管理员密码测试私钥导出。
 
 管理域名的 `/api/v1/auth/session` 在未登录时返回 401；公开域名同一路径返回 404。
 错误 Host 返回 421；缺失的 `/assets/*.js` 或 API 路径返回 404，不返回首页 HTML。
 静态哈希资源长缓存，HTML 重新验证，API 响应继续保留自身缓存策略。
 
-## 6. 从 Cloudflare 版本迁移
+## 6. 首版数据库基线
 
-1. 先备份原 PostgreSQL（含 schema、函数、分区）与受限访问的环境配置，保留旧二进制。
-2. 构建新二进制，在临时数据库副本验证。保持 `DATABASE_URL`、全部 `PKI_MASTER_KEYS`、
-   `PKI_MASTER_KEY_ACTIVE_ID`、root 凭据和两个正式域名。沿用原库，执行 `migrate` 应用增量迁移。
-3. 从新环境文件移除 `CF_ACCESS_TEAM_DOMAIN`、`CF_ACCESS_AUD`、`PKI_ORIGIN_SHARED_SECRET`。
-   Nginx 不再转发 `Cf-Access-*` 或 `X-PKI-*` 私有头，按上述方式设置 Host 和真实 IP。
-4. 将新程序安装为现有 systemd 服务，执行 `migrate` 后重启，确认本机检查正常。
-5. 配置 HTTPS Nginx 并验证，然后将业务域名切换到该 Nginx。
-   全部客户端的请求必须到达 Nginx，不再经过旧 Pages 转发链路。
-6. 验证成功后停用对应 Pages、Access 和 Tunnel 路由。共享 Tunnel 承载其他服务时只移除
-   PKI 路由；保留旧环境与部署记录供回滚。上述外部资源变更由运维按实际环境执行。
+首个正式版只支持新建空库初始化，或恢复同一基线的完整备份。
+预发布编号迁移不再提供，旧 Cloudflare 部署或其他预发布数据库不能原地执行初始化。
+命令会拒绝没有本基线标记的非空 `public`，不会删除旧表或转换旧数据。
+需要保留旧数据时先备份，并单独制定导入或迁移方案，不要手工补写基线标记。
 
-现有账户、CA、证书、加密私钥、审批、任务与审计均沿用；历史审计的 `cf_access_sub`
-字段保留，新登录不再写入 Cloudflare 身份。已有会话可用性受密码同步、过期和撤销影响；
-认证迁移 `00005_root_totp_state.sql` 记录 TOTP 密钥指纹，首次启动同步会撤销 root 旧会话；
-后续 TOTP 密钥轮换也会撤销旧会话并重置该密钥的重放计数，CA 解密主密钥继续沿用。
-切换后重新登录验证新链路。桌面程序移除 Cloudflare OAuth 流程，直接
-执行本地登录，参见 [desktop-client-integration.md](desktop-client-integration.md)。
-
-回滚时恢复旧二进制、旧代理/DNS 路由和完整旧环境（含 Access 与共享密钥配置）。
-CA 导入功能包含增量 schema 迁移；降级前须处理 RSA-2048 和不限深度 CA，
-迁移会拒绝破坏性降级。独立签发的 `00004_independent_signing.sql` 在存在实例时也会拒绝
-删除相关表的降级；备份须包含独立 CA 密钥、凭据摘要、额度和签发/吊销记录。
-按日常变更流程先验证备份和回滚路径。保留原证书发布域名，
-避免已签发证书携带的 AIA/CRL/OCSP URL 失效。
+同一正式版更换主机时，恢复完整数据库与全部 KEK，保留证书的 AIA/CRL/OCSP 发布域名。
+完整恢复前不要运行建表 SQL；回退需要匹配的数据库备份、二进制和配置。
+具体见 [备份与恢复](deployment-migration-export.md)。
 
 ## 7. 备份与排障
 
 备份至少包含 PostgreSQL 完整备份和独立加密保管的 KEK/配置；丢失 KEK 无法解密已有私钥。
-升级前先迁移，在同一服务中替换二进制即可更新前后端。查看日志：
+更新前先验证数据库基线与备份，在同一服务中替换二进制即可更新前后端。查看日志：
 
 ```sh
 sudo journalctl -u pki-console -n 100 --no-pager
@@ -165,10 +150,10 @@ sudo journalctl -u pki-console -n 100 --no-pager
 | --- | --- |
 | Nginx 502 | 程序状态、127.0.0.1:8080、本机 health |
 | 421 | Nginx Host 与两个 BASE_URL 的域名是否一致 |
-| 登录 401 | second_factor_required 表示补充 TOTP；其他情况核对密码、锁定、TOTP 算法/时间/重放及 login denied 日志 |
+| 登录 401 | 核对用户名、密码、锁定和 login denied 日志中的 stage；account_locked 按 Retry-After 等待 |
 | 写请求 401 | Cookie、会话是否过期；HTTPS 是否正确 |
 | 写请求 403 csrf_failed | CSRF token 是否与当前会话匹配 |
-| 登录/会话 503 authentication_unavailable | 数据库连通性、schema 迁移、进程环境与服务日志 |
+| 登录/会话 503 authentication_unavailable | 数据库连通性、schema 初始化、进程环境与服务日志 |
 | 页面脚本加载失败 | 是否用 `make pki-console` 重新构建并部署完整二进制 |
 | 无法解密密钥 | 旧 KEK 是否完整保留，active ID 是否有效 |
 | TSA 拒绝签发 | 系统 NTP 状态与内核时钟不确定度 |

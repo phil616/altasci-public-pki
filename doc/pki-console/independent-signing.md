@@ -1,6 +1,6 @@
 # 独立 CSR 自动签发服务
 
-状态：当前实现；核对日期：2026-11-15；策略版本 1。此功能采用自定义 HTTPS JSON API，不是标准 ACME，
+状态：当前实现；核对日期：2026-11-16；策略版本 1。此功能采用自定义 HTTPS JSON API，不是标准 ACME，
 Certbot/acme.sh 不能直接对接。客户端持有凭据并提交符合策略的 CSR 即可自动签发，
 不执行 DNS/HTTP 域名控制权验证。CA 所有者负责授予名称范围与用途。
 
@@ -21,7 +21,7 @@ CA 材料不可原地替换；更换 CA 创建新实例。实例只支持启用/
 数据库仅保存 SHA-256 摘要，验证采用固定时间比较。每个可信方分配不同凭据。
 权限分别为 `issue`、`read`、`revoke`；read/revoke 仅能操作这枚凭据签发的证书。
 实例所有者可管理该实例全部证书。多人共享凭据时，审计无法区分实际使用者。
-密码重置、修改 TOTP 和浏览器退出不自动撤销独立凭据；泄露处置需单独撤销相关凭据。
+密码重置和浏览器退出不自动撤销独立凭据；泄露处置需单独撤销相关凭据。
 账户锁定会影响工具访问；锁定期届满后需成功登录恢复 active 状态。
 
 有效期 1 小时至 90 天，默认 30 天；总签发额度 1–1,000,000，默认 1,000；
@@ -109,9 +109,9 @@ CRL 在读取时按需生成并缓存，吊销后失效；临近 NextUpdate 一�
 
 ## 部署与 Web 使用
 
-重新构建 `make pki-console`，备份后显式执行 `pki-console migrate` 应用
-[00004_independent_signing.sql](../../console/store/migrations/00004_independent_signing.sql)，
-再启动新二进制。降级迁移在存在独立实例时拒绝删除表，防止丢失 CA、凭据和签发历史。
+独立签发所需表已包含在唯一的 [schema.sql](../../console/store/schema.sql) 中。
+新部署按 [初始化指南](schema-initialization.md) 准备空库并运行单体程序。
+完整备份必须包含独立 CA、凭据摘要、额度和签发历史。
 无需新环境变量、端口、Cloudflare 或额外后台程序；现有 Nginx 的 `location /` 可直接转发。
 
 登录后进入“独立签发”（`/tools/signing`），创建实例并上传材料，填写白名单，
@@ -188,7 +188,7 @@ PKI_TEST_DATABASE_URL='postgresql://postgres:test@127.0.0.1:5432/pki_test?sslmod
 ```
 
 测试覆盖重复系统 CA、跨实例/所有者/凭据越权、并发单次额度、幂等与重启、审计回滚、
-策略收紧、过期/撤销/停用、作用域 CRL/OpenSSL 校验、HTTPS 客户端与重定向拒绝、迁移降级保护。
+策略收紧、过期/撤销/停用、作用域 CRL/OpenSSL 校验、HTTPS 客户端与重定向拒绝、初始化重复执行与非空库拒绝。
 文档一致性另运行 `make pki-console-docs`，工具配置见 [维护规范](documentation-maintenance.md)。
 
 本次验证范围与结果见 [2026-11-15 实现检查记录](independent-signing-review-2026-11-15.md)。

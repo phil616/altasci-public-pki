@@ -32,11 +32,11 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newSession := func(snapshot store.User, step int64) (string, []byte, error) {
+	newSession := func(snapshot store.User) (string, []byte, error) {
 		_, digest, _ := security.NewToken()
 		_, csrf, _ := security.NewToken()
 		now := time.Now()
-		id, err := data.CreateAuthenticatedSession(ctx, snapshot, step, digest, csrf, now.Add(time.Hour), now.Add(2*time.Hour), now, "127.0.0.1", "regression")
+		id, err := data.CreateAuthenticatedSession(ctx, snapshot, digest, csrf, now.Add(time.Hour), now.Add(2*time.Hour), now, "127.0.0.1", "regression")
 		return id, digest, err
 	}
 	for i := 0; i < 5; i++ {
@@ -48,7 +48,7 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil || locked.Status != "locked" || locked.FailedLoginCount != 5 || locked.LockedUntil == nil {
 		t.Fatalf("failed login lock did not engage: %#v %v", locked, err)
 	}
-	if _, _, err := newSession(user, 0); err == nil {
+	if _, _, err := newSession(user); err == nil {
 		t.Fatal("locked account created session")
 	}
 	if err := data.SetUserStatus(ctx, user.ID, "active"); err != nil {
@@ -57,14 +57,14 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err := data.ResetUserPassword(ctx, user.ID, "new-verified-hash"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := newSession(user, 0); err == nil {
+	if _, _, err := newSession(user); err == nil {
 		t.Fatal("stale password verification created a session after reset")
 	}
 	user, err = data.UserByID(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, digest, err := newSession(user, 0)
+	_, digest, err := newSession(user)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil || disabled.Status != "disabled" {
 		t.Fatalf("login failure reactivated disabled account: %s %v", disabled.Status, err)
 	}
-	if _, _, err := newSession(user, 0); err == nil {
+	if _, _, err := newSession(user); err == nil {
 		t.Fatal("disabled account created a session")
 	}
 	if err := data.SetUserStatus(ctx, user.ID, "active"); err != nil {
@@ -96,7 +96,7 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rootDigest, err := newSession(root, root.TOTPLastStep+1)
+	_, rootDigest, err := newSession(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := data.AcceptRootStepUp(ctx, root.ID, "root-old-hash", root.RootTOTPSecretHash, root.TOTPLastStep+1); err == nil {
+	if err := data.VerifyRootPasswordSnapshot(ctx, root.ID, "root-old-hash"); err == nil {
 		t.Fatal("stale password verification authorized root key export")
 	}
 	if _, err := data.SessionByToken(ctx, rootDigest, time.Now()); err == nil {
@@ -116,13 +116,13 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, _, err := newSession(root, root.TOTPLastStep+1); err == nil {
+			if _, _, err := newSession(root); err == nil {
 				successful.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
-	if successful.Load() != 1 {
-		t.Fatalf("concurrent TOTP consumption: %d sessions", successful.Load())
+	if successful.Load() != 2 {
+		t.Fatalf("concurrent password sessions: %d sessions", successful.Load())
 	}
 }
