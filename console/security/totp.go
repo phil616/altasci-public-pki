@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 )
 
@@ -21,8 +20,10 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastAccepted int64) (
 	if len(code) != 6 {
 		return 0, errors.New("TOTP code must contain six digits")
 	}
-	if _, err := strconv.Atoi(code); err != nil {
-		return 0, errors.New("TOTP code must contain only digits")
+	for _, digit := range code {
+		if digit < '0' || digit > '9' {
+			return 0, errors.New("TOTP code must contain only digits")
+		}
 	}
 	counter := now.Unix() / totpPeriod
 	for offset := int64(-1); offset <= 1; offset++ {

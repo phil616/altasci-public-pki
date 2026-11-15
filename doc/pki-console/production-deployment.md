@@ -55,6 +55,8 @@ python3 -c 'import base64,secrets; print(base64.b32encode(secrets.token_bytes(20
 ```
 
 在兼容的验证器中添加 TOTP：算法 **SHA-256**、6 位、周期 30 秒（不是常见的 SHA-1 默认值）。
+使用 `otpauth` 导入时必须明确 `algorithm=SHA256&digits=6&period=30`，导入后确认应用实际使用 SHA-256。
+URI 含有验证器密钥，应只在受控本地环境生成和导入。URI 形式见 [Key URI 格式](https://github.com/google/google-authenticator/wiki/Key-Uri-Format)。
 超级管理员用环境文件中的邮箱、密码和动态验证码登录。普通用户和运维账户继续使用
 原本的本地用户名/邮箱和密码，无需外部身份提供方。
 
@@ -113,7 +115,7 @@ curl --fail https://pki-console.example.com/login
 curl --fail https://pki.example.com/pki/v1/authorities
 ```
 
-浏览器打开管理域名，勾选超级管理员，输入邮箱、密码和 TOTP。验证登录、会话、
+浏览器打开管理域名，直接输入邮箱、密码和始终可见的 TOTP 字段。验证登录、会话、
 CA 列表和普通账户权限；到公开域名检查 CA、证书精确查询、CRL/OCSP/TSA。
 使用一个新验证码测试私钥导出；登录时用过的验证码不能再次用于导出。
 
@@ -136,6 +138,8 @@ CA 列表和普通账户权限；到公开域名检查 CA、证书精确查询�
 
 现有账户、CA、证书、加密私钥、审批、任务与审计均沿用；历史审计的 `cf_access_sub`
 字段保留，新登录不再写入 Cloudflare 身份。已有会话可用性受密码同步、过期和撤销影响；
+认证迁移 `00005_root_totp_state.sql` 记录 TOTP 密钥指纹，首次启动同步会撤销 root 旧会话；
+后续 TOTP 密钥轮换也会撤销旧会话并重置该密钥的重放计数，CA 解密主密钥继续沿用。
 切换后重新登录验证新链路。桌面程序移除 Cloudflare OAuth 流程，直接
 执行本地登录，参见 [desktop-client-integration.md](desktop-client-integration.md)。
 
@@ -159,8 +163,10 @@ sudo journalctl -u pki-console -n 100 --no-pager
 | --- | --- |
 | Nginx 502 | 程序状态、127.0.0.1:8080、本机 health |
 | 421 | Nginx Host 与两个 BASE_URL 的域名是否一致 |
-| 登录 401 | 本地密码、账户锁定、TOTP 算法/时间/重放；查看 login denied 日志 |
-| 写请求 401 | Cookie、CSRF token、会话是否过期；HTTPS 是否正确 |
+| 登录 401 | second_factor_required 表示补充 TOTP；其他情况核对密码、锁定、TOTP 算法/时间/重放及 login denied 日志 |
+| 写请求 401 | Cookie、会话是否过期；HTTPS 是否正确 |
+| 写请求 403 csrf_failed | CSRF token 是否与当前会话匹配 |
+| 登录/会话 503 authentication_unavailable | 数据库连通性、schema 迁移、进程环境与服务日志 |
 | 页面脚本加载失败 | 是否用 `make pki-console` 重新构建并部署完整二进制 |
 | 无法解密密钥 | 旧 KEK 是否完整保留，active ID 是否有效 |
 | TSA 拒绝签发 | 系统 NTP 状态与内核时钟不确定度 |

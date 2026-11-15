@@ -1,5 +1,5 @@
 import { CloudServerOutlined, LockOutlined, MailOutlined, SafetyCertificateFilled, SafetyOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Checkbox, Flex, Form, Input, Space, Typography } from 'antd';
+import { Alert, Button, Card, Flex, Form, Input, Space, Typography } from 'antd';
 import { useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
@@ -8,13 +8,12 @@ import { APIError } from '@/lib/api';
 
 const { Paragraph, Text, Title } = Typography;
 
-interface LoginValues { login: string; password: string; totp?: string; rootLogin?: boolean }
+interface LoginValues { login: string; password: string; totp?: string }
 
 export function LoginPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [rootLogin, setRootLogin] = useState(false);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   if (user) return <Navigate to="/" replace />;
@@ -23,11 +22,20 @@ export function LoginPage() {
     setSubmitting(true);
     setError(undefined);
     try {
-      await login({ login: values.login, password: values.password, totp: rootLogin ? values.totp : undefined });
+      await login({ login: values.login, password: values.password, totp: values.totp || undefined });
       const target = (location.state as { from?: string } | null)?.from ?? '/';
       void navigate(target, { replace: true });
     } catch (reason) {
-      setError(reason instanceof APIError ? reason.message : '登录失败，请稍后重试');
+      const messages: Record<string, string> = {
+        invalid_credentials: '账户、密码或动态验证码不正确，或账户仍处于锁定期。超级管理员请使用 SHA-256、6 位、30 秒的未使用验证码。',
+        second_factor_required: '密码校验已通过，请填写超级管理员动态验证码：SHA-256、6 位、30 秒。',
+        authentication_unavailable: '认证服务暂时不可用，请稍后重试，并通过请求编号检查服务端日志。',
+        origin_not_allowed: '访问地址与服务端配置的管理地址不一致，请使用正确的管理域名。',
+        rate_limited: '登录尝试过于频繁，请稍后重试。',
+      };
+      setError(reason instanceof APIError
+        ? `${messages[reason.code] ?? reason.message}${reason.requestID ? `（请求编号：${reason.requestID}）` : ''}`
+        : '登录失败，请检查网络连接后重试');
     } finally {
       setSubmitting(false);
     }
@@ -62,15 +70,10 @@ export function LoginPage() {
             <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
               <Input.Password autoComplete="current-password" prefix={<LockOutlined />} placeholder="输入账户密码" />
             </Form.Item>
-            <Checkbox checked={rootLogin} onChange={(event) => setRootLogin(event.target.checked)}>超级管理员登录</Checkbox>
-            {rootLogin ? (
-              <>
-                <Form.Item label="六位动态验证码" name="totp" rules={[{ required: true, pattern: /^\d{6}$/, message: '请输入六位 TOTP 验证码' }]}>
-                  <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} prefix={<SafetyOutlined />} placeholder="000000" />
-                </Form.Item>
-                <Alert type="info" showIcon title="使用本地超级管理员密码和 TOTP 动态验证码登录（SHA-256，6 位，30 秒）。" />
-              </>
-            ) : null}
+            <Form.Item label="动态验证码（超级管理员必填）" name="totp" extra="普通用户和运维账户可留空。" rules={[{ pattern: /^\d{6}$/, message: '请输入六位 TOTP 验证码' }]}>
+              <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} prefix={<SafetyOutlined />} placeholder="000000" />
+            </Form.Item>
+            <Alert type="info" showIcon title="使用本地超级管理员密码和 TOTP 动态验证码登录（SHA-256，6 位，30 秒）。" />
             <Button block type="primary" htmlType="submit" loading={submitting}>安全登录</Button>
           </Form>
           <Flex justify="center"><Text type="secondary" className="login-footnote">受保护的操作会写入不可变审计链</Text></Flex>

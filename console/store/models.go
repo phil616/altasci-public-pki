@@ -6,17 +6,18 @@ import (
 )
 
 type User struct {
-	ID               string     `json:"id"`
-	Username         string     `json:"username"`
-	Email            *string    `json:"email,omitempty"`
-	Role             string     `json:"role"`
-	PasswordHash     string     `json:"-"`
-	Status           string     `json:"status"`
-	FailedLoginCount int        `json:"-"`
-	LockedUntil      *time.Time `json:"-"`
-	TOTPLastStep     int64      `json:"-"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	Email              *string    `json:"email,omitempty"`
+	Role               string     `json:"role"`
+	PasswordHash       string     `json:"-"`
+	Status             string     `json:"status"`
+	FailedLoginCount   int        `json:"-"`
+	LockedUntil        *time.Time `json:"-"`
+	TOTPLastStep       int64      `json:"-"`
+	RootTOTPSecretHash []byte     `json:"-"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type Session struct {

@@ -19,6 +19,8 @@ import type {
 
 const CSRF_STORAGE_KEY = 'pki-console.csrf';
 const consoleBase = '/api/v1';
+let memoryCSRFToken: string | null = null;
+let csrfStorageAvailable = true;
 
 export class APIError extends Error {
   readonly status: number;
@@ -35,12 +37,29 @@ export class APIError extends Error {
 }
 
 export function setCSRFToken(token?: string): void {
-  if (token) localStorage.setItem(CSRF_STORAGE_KEY, token);
-  else localStorage.removeItem(CSRF_STORAGE_KEY);
+  memoryCSRFToken = token || null;
+  try {
+    if (token) localStorage.setItem(CSRF_STORAGE_KEY, token);
+    else localStorage.removeItem(CSRF_STORAGE_KEY);
+    csrfStorageAvailable = true;
+  } catch {
+    csrfStorageAvailable = false;
+  }
+}
+
+function csrfToken(): string | null {
+  if (csrfStorageAvailable) {
+    try {
+      memoryCSRFToken = localStorage.getItem(CSRF_STORAGE_KEY);
+    } catch {
+      csrfStorageAvailable = false;
+    }
+  }
+  return memoryCSRFToken;
 }
 
 export function hasCSRFToken(): boolean {
-  return Boolean(localStorage.getItem(CSRF_STORAGE_KEY));
+  return Boolean(csrfToken());
 }
 
 function isUnsafe(method: string): boolean {
@@ -73,7 +92,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const method = options.method ?? 'GET';
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json, application/problem+json');
-  const csrf = localStorage.getItem(CSRF_STORAGE_KEY);
+  const csrf = csrfToken();
   if (isUnsafe(method) && csrf) headers.set('X-CSRF-Token', csrf);
   if (options.idempotent) headers.set('Idempotency-Key', crypto.randomUUID());
   let body: BodyInit | undefined;
@@ -91,7 +110,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   });
   if (!response.ok) {
     const error = await parseError(response);
-    if (error.status === 401) window.dispatchEvent(new Event('pki:unauthorized'));
+    if (error.status === 401 && path !== `${consoleBase}/auth/login` && !options.signal?.aborted) {
+      window.dispatchEvent(new Event('pki:unauthorized'));
+    }
     throw error;
   }
   if (response.status === 204) return undefined as T;
@@ -105,7 +126,7 @@ async function requestList<T>(path: string): Promise<ListResponse<T>> {
 
 async function download(path: string, filename: string, method = 'GET', body?: unknown): Promise<void> {
   const headers = new Headers({ Accept: 'application/x-pem-file, application/octet-stream' });
-  const csrf = localStorage.getItem(CSRF_STORAGE_KEY);
+  const csrf = csrfToken();
   if (isUnsafe(method) && csrf) headers.set('X-CSRF-Token', csrf);
   let payload: BodyInit | undefined;
   if (body !== undefined) {
@@ -181,7 +202,7 @@ export const consoleAPI = {
     await request<void>(`${consoleBase}/auth/logout`, { method: 'POST' });
     setCSRFToken();
   },
-  session: () => request<{ user: User }>(`${consoleBase}/auth/session`),
+  session: (signal?: AbortSignal) => request<{ user: User }>(`${consoleBase}/auth/session`, { signal }),
   version: () => request<VersionInfo>(`${consoleBase}/version`),
   users: () => request<ListResponse<User>>(`${consoleBase}/users`),
   createUser: (input: { username: string; email?: string; role: 'operator' | 'user'; password: string }) =>

@@ -15,6 +15,7 @@ import (
 )
 
 var ErrNotFound = errors.New("record not found")
+var ErrCredentialStateChanged = errors.New("verified credentials are no longer current")
 var ErrIdempotencyConflict = errors.New("idempotency key conflicts with another request")
 var ErrTimestampSerialCollision = errors.New("timestamp serial already exists")
 
@@ -30,7 +31,7 @@ func scanUser(row pgx.Row) (User, error) {
 	var user User
 	err := row.Scan(&user.ID, &user.Username, &user.Email, &user.Role, &user.PasswordHash,
 		&user.Status, &user.FailedLoginCount, &user.LockedUntil, &user.TOTPLastStep,
-		&user.CreatedAt, &user.UpdatedAt)
+		&user.RootTOTPSecretHash, &user.CreatedAt, &user.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -38,11 +39,14 @@ func scanUser(row pgx.Row) (User, error) {
 }
 
 const userColumns = `id::text, username, email, role, password_hash, status,
-failed_login_count, locked_until, root_totp_last_step, created_at, updated_at`
+failed_login_count, locked_until, root_totp_last_step, root_totp_secret_hash, created_at, updated_at`
 
 func (s *Store) UserByLogin(ctx context.Context, login string) (User, error) {
-	return scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users
-        WHERE lower(username)=lower($1) OR lower(email)=lower($1) LIMIT 1`, login))
+	// Legacy data may reuse one account's email as another account's username.
+	// Never choose an arbitrary identity when a login matches multiple accounts.
+	return scanUser(s.pool.QueryRow(ctx, `WITH matches AS (SELECT `+userColumns+` FROM users
+        WHERE lower(username)=lower($1) OR lower(email)=lower($1) LIMIT 2)
+        SELECT * FROM matches WHERE (SELECT count(*) FROM matches)=1`, login))
 }
 
 func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
@@ -59,16 +63,74 @@ func (s *Store) UpsertRoot(ctx context.Context, email, passwordHash string) (Use
         ON CONFLICT (role) WHERE role='super_admin' DO UPDATE SET
           username=EXCLUDED.username,email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
           password_changed_at=CASE WHEN users.password_hash<>EXCLUDED.password_hash THEN now() ELSE users.password_changed_at END,
-          status='active',updated_at=now(),version=users.version+1
+          failed_login_count=0,locked_until=NULL,status='active',updated_at=now(),version=users.version+1
         RETURNING `+userColumns, email, passwordHash))
+}
+
+// SynchronizeRootTOTP makes secret rotation revoke sessions and reset the replay
+// counter atomically with respect to login. Initial fingerprint enrollment keeps
+// the old counter, so upgrading cannot make a previously used code usable again.
+func (s *Store) SynchronizeRootTOTP(ctx context.Context, userID string, digest []byte) (User, error) {
+	if len(digest) != sha256.Size {
+		return User{}, errors.New("invalid TOTP secret fingerprint")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback(ctx)
+	var previous []byte
+	if err := tx.QueryRow(ctx, `SELECT root_totp_secret_hash FROM users
+        WHERE id=$1 AND role='super_admin' FOR UPDATE`, userID).Scan(&previous); err != nil {
+		return User{}, err
+	}
+	if !bytes.Equal(previous, digest) {
+		if _, err := tx.Exec(ctx, `UPDATE users SET
+            root_totp_last_step=CASE WHEN root_totp_secret_hash IS NULL THEN root_totp_last_step ELSE 0 END,
+            root_totp_secret_hash=$2,updated_at=now(),version=version+1 WHERE id=$1`, userID, digest); err != nil {
+			return User{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`, userID); err != nil {
+			return User{}, err
+		}
+	}
+	user, err := scanUser(tx.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1`, userID))
+	if err != nil {
+		return User{}, err
+	}
+	return user, tx.Commit(ctx)
 }
 
 func (s *Store) CreateUser(ctx context.Context, username string, email *string, role, passwordHash string) (User, error) {
 	if role != "operator" && role != "user" {
 		return User{}, errors.New("only operator and user accounts may be created")
 	}
-	return scanUser(s.pool.QueryRow(ctx, `INSERT INTO users (username,email,role,password_hash)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback(ctx)
+	// Serialize account creation so the cross-column check cannot race another
+	// creation. Root upserts set BOTH identifiers to the email and are additionally
+	// protected by the two existing unique indexes.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('pki-console:user-login-identifiers',0))`); err != nil {
+		return User{}, err
+	}
+	var conflict bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users
+        WHERE lower(username)=lower($1) OR lower(email)=lower($1)
+           OR ($2::text IS NOT NULL AND (lower(username)=lower($2) OR lower(email)=lower($2))))`, username, email).Scan(&conflict); err != nil {
+		return User{}, err
+	}
+	if conflict {
+		return User{}, errors.New("username or email conflicts with an existing login identifier")
+	}
+	user, err := scanUser(tx.QueryRow(ctx, `INSERT INTO users (username,email,role,password_hash)
         VALUES ($1,$2,$3,$4) RETURNING `+userColumns, username, email, role, passwordHash))
+	if err != nil {
+		return User{}, err
+	}
+	return user, tx.Commit(ctx)
 }
 
 func (s *Store) RecordLoginFailure(ctx context.Context, userID string, now time.Time) error {
@@ -96,8 +158,12 @@ func (s *Store) CreateAuthenticatedSession(ctx context.Context, user User, totpS
         WHERE id=$1 AND password_hash=$2 AND role=$5 AND status<>'disabled'
           AND (locked_until IS NULL OR locked_until<=$4)
           AND (role<>'super_admin' OR root_totp_last_step<$3)
-        RETURNING id::text`, user.ID, user.PasswordHash, totpStep, now, user.Role).Scan(&id)
+          AND root_totp_secret_hash IS NOT DISTINCT FROM $6::bytea
+        RETURNING id::text`, user.ID, user.PasswordHash, totpStep, now, user.Role, user.RootTOTPSecretHash).Scan(&id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrCredentialStateChanged
+		}
 		return "", err
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO sessions
@@ -110,9 +176,10 @@ func (s *Store) CreateAuthenticatedSession(ctx context.Context, user User, totpS
 	return id, tx.Commit(ctx)
 }
 
-func (s *Store) AcceptRootStepUp(ctx context.Context, userID, passwordHash string, totpStep int64) error {
+func (s *Store) AcceptRootStepUp(ctx context.Context, userID, passwordHash string, secretHash []byte, totpStep int64) error {
 	command, err := s.pool.Exec(ctx, `UPDATE users SET root_totp_last_step=$2,updated_at=now()
-        WHERE id=$1 AND role='super_admin' AND status='active' AND root_totp_last_step<$2 AND password_hash=$3`, userID, totpStep, passwordHash)
+        WHERE id=$1 AND role='super_admin' AND status='active' AND root_totp_last_step<$2 AND password_hash=$3
+          AND root_totp_secret_hash IS NOT DISTINCT FROM $4::bytea`, userID, totpStep, passwordHash, secretHash)
 	if err != nil {
 		return err
 	}
@@ -143,7 +210,7 @@ func (s *Store) SessionByToken(ctx context.Context, tokenHash []byte, now time.T
 		&session.IdleExpiresAt, &session.AbsoluteExpiresAt,
 		&session.User.ID, &session.User.Username, &session.User.Email, &session.User.Role,
 		&session.User.PasswordHash, &session.User.Status, &session.User.FailedLoginCount,
-		&session.User.LockedUntil, &session.User.TOTPLastStep, &session.User.CreatedAt,
+		&session.User.LockedUntil, &session.User.TOTPLastStep, &session.User.RootTOTPSecretHash, &session.User.CreatedAt,
 		&session.User.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrNotFound
@@ -388,7 +455,7 @@ func (s *Store) AuditInTx(ctx context.Context, tx pgx.Tx, event AuditEvent) erro
 func userColumnsWithAlias(alias string) string {
 	return alias + `.id::text,` + alias + `.username,` + alias + `.email,` + alias + `.role,` +
 		alias + `.password_hash,` + alias + `.status,` + alias + `.failed_login_count,` +
-		alias + `.locked_until,` + alias + `.root_totp_last_step,` + alias + `.created_at,` + alias + `.updated_at`
+		alias + `.locked_until,` + alias + `.root_totp_last_step,` + alias + `.root_totp_secret_hash,` + alias + `.created_at,` + alias + `.updated_at`
 }
 
 func stringValue(value *string) string {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"strings"
@@ -118,8 +119,8 @@ func (c Config) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required configuration: %s", strings.Join(missing, ", "))
 	}
-	if len(c.RootUserPassword) < 32 {
-		return errors.New("ROOT_USER_PASSWORD must contain at least 32 characters")
+	if len(c.RootUserPassword) < 32 || len(c.RootUserPassword) > 1024 {
+		return errors.New("ROOT_USER_PASSWORD must contain 32-1024 bytes")
 	}
 	if c.RootUserPassword == "replace-with-at-least-32-random-characters" {
 		return errors.New("ROOT_USER_PASSWORD must not use the example placeholder")
@@ -156,7 +157,8 @@ func (c Config) Validate() error {
 	if bytes.Equal(c.RootUserTOTPSecret, make([]byte, len(c.RootUserTOTPSecret))) {
 		return errors.New("ROOT_USER_TOTP_SECRET must not use the all-zero example secret")
 	}
-	if !strings.Contains(c.RootUserEmail, "@") {
+	address, emailErr := mail.ParseAddress(c.RootUserEmail)
+	if emailErr != nil || address.Address != c.RootUserEmail || len(c.RootUserEmail) > 254 {
 		return errors.New("ROOT_USER_EMAIL must be a valid email address")
 	}
 	if strings.EqualFold(strings.TrimSuffix(c.PublicHostname, "."), strings.TrimSuffix(c.ConsoleHostname, ".")) {
@@ -219,7 +221,11 @@ func parseHTTPSURL(name, raw string, allowHTTP bool) (*url.URL, error) {
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if port := u.Port(); port != "" {
+	port := u.Port()
+	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
 		u.Host = net.JoinHostPort(host, port)
 	} else if strings.Contains(host, ":") {
 		u.Host = "[" + host + "]"

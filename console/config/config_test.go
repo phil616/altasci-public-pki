@@ -91,6 +91,31 @@ func TestRejectsShortRootPassword(t *testing.T) {
 	}
 }
 
+func TestRootLoginConfigurationLimits(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"ROOT_USER_PASSWORD", strings.Repeat("p", 1025)},
+		{"ROOT_USER_EMAIL", "Root <root@example.test>"},
+		{"ROOT_USER_EMAIL", strings.Repeat("a", 250) + "@example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			t.Setenv(tc.name, tc.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted a root credential that login cannot use")
+			}
+		})
+	}
+}
+
+func TestCanonicalOriginDefaultPort(t *testing.T) {
+	for _, raw := range []string{"https://CONSOLE.example.test:443/", "http://CONSOLE.example.test:80/"} {
+		u, err := parseHTTPSURL("CONSOLE_BASE_URL", raw, true)
+		if err != nil || u.Host != "console.example.test" {
+			t.Fatalf("default port would fail browser Origin check: %v %v", u, err)
+		}
+	}
+}
+
 func TestRejectsKnownExampleSecrets(t *testing.T) {
 	for _, tc := range []struct{ name, value string }{
 		{"ROOT_USER_PASSWORD", "replace-with-at-least-32-random-characters"},

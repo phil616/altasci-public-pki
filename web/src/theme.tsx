@@ -8,14 +8,18 @@ interface ThemeContextValue { mode: ColorMode; toggle: () => void }
 const ThemeContext = createContext<ThemeContextValue>({ mode: 'light', toggle: () => undefined });
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<ColorMode>(() =>
-    localStorage.getItem('pki-console.theme') === 'dark' ? 'dark' : 'light',
-  );
+  const [mode, setMode] = useState<ColorMode>(() => {
+    try {
+      return localStorage.getItem('pki-console.theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
   const value = useMemo(() => ({
     mode,
     toggle: () => setMode((current) => {
       const next = current === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('pki-console.theme', next);
+      try { localStorage.setItem('pki-console.theme', next); } catch { /* Keep the in-memory theme. */ }
       return next;
     }),
   }), [mode]);

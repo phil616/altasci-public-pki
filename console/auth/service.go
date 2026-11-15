@@ -4,6 +4,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ const CookieName = "__Host-pki_session"
 const DevelopmentCookieName = "pki_session"
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrSecondFactorRequired = errors.New("second factor required")
+var ErrInvalidCSRF = errors.New("invalid CSRF token")
 
 type Service struct {
 	store  *store.Store
@@ -66,8 +69,8 @@ func (s *Service) BootstrapRoot(ctx context.Context) (store.User, error) {
 	if err == nil {
 		matches, verifyErr := security.VerifyPassword(s.config.RootUserPassword, existing.PasswordHash)
 		emailMatches := existing.Email != nil && strings.EqualFold(*existing.Email, s.config.RootUserEmail)
-		if verifyErr == nil && matches && emailMatches && existing.Status == "active" {
-			return existing, nil
+		if verifyErr == nil && matches && emailMatches && existing.Status != "disabled" {
+			return s.synchronizeRootTOTP(ctx, existing.ID)
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.User{}, err
@@ -76,7 +79,16 @@ func (s *Service) BootstrapRoot(ctx context.Context) (store.User, error) {
 	if err != nil {
 		return store.User{}, err
 	}
-	return s.store.UpsertRoot(ctx, s.config.RootUserEmail, hash)
+	user, err := s.store.UpsertRoot(ctx, s.config.RootUserEmail, hash)
+	if err != nil {
+		return store.User{}, err
+	}
+	return s.synchronizeRootTOTP(ctx, user.ID)
+}
+
+func (s *Service) synchronizeRootTOTP(ctx context.Context, userID string) (store.User, error) {
+	digest := sha256.Sum256(s.config.RootUserTOTPSecret)
+	return s.store.SynchronizeRootTOTP(ctx, userID, digest[:])
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
@@ -86,6 +98,9 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	now := s.now()
 	user, err := s.store.UserByLogin(ctx, strings.TrimSpace(input.Login))
 	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return LoginResult{}, fmt.Errorf("look up login account: %w", err)
+		}
 		_, _ = security.VerifyPassword(input.Password, s.dummy)
 		return LoginResult{}, invalidCredentials("user_lookup", err)
 	}
@@ -94,14 +109,21 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	}
 	passwordOK, verifyErr := security.VerifyPassword(input.Password, user.PasswordHash)
 	if verifyErr != nil || !passwordOK {
-		return LoginResult{}, invalidCredentials("password", errors.Join(verifyErr, s.store.RecordLoginFailure(ctx, user.ID, now)))
+		return LoginResult{}, s.loginFailure(ctx, user.ID, now, "password", verifyErr)
 	}
 
 	var totpStep int64
 	if user.Role == "super_admin" {
+		digest := sha256.Sum256(s.config.RootUserTOTPSecret)
+		if len(user.RootTOTPSecretHash) > 0 && subtle.ConstantTimeCompare(user.RootTOTPSecretHash, digest[:]) != 1 {
+			return LoginResult{}, errors.New("root TOTP configuration changed; restart this process")
+		}
+		if input.TOTP == "" {
+			return LoginResult{}, ErrSecondFactorRequired
+		}
 		totpStep, err = security.VerifyTOTP(s.config.RootUserTOTPSecret, input.TOTP, now, user.TOTPLastStep)
 		if err != nil {
-			return LoginResult{}, invalidCredentials("totp", errors.Join(err, s.store.RecordLoginFailure(ctx, user.ID, now)))
+			return LoginResult{}, s.loginFailure(ctx, user.ID, now, "totp", err)
 		}
 	}
 	token, tokenHash, err := security.NewToken()
@@ -118,10 +140,20 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 	}
 	sessionID, err := s.store.CreateAuthenticatedSession(ctx, user, totpStep, tokenHash, csrfHash, now.Add(idle), now.Add(absolute), now, input.IP, input.UserAgent)
 	if err != nil {
+		if errors.Is(err, store.ErrCredentialStateChanged) {
+			return LoginResult{}, invalidCredentials("credential_state_changed", nil)
+		}
 		return LoginResult{}, fmt.Errorf("create session: %w", err)
 	}
 	return LoginResult{User: user, SessionID: sessionID, Token: token, CSRFToken: csrfToken,
 		ExpiresAt: now.Add(absolute)}, nil
+}
+
+func (s *Service) loginFailure(ctx context.Context, userID string, now time.Time, stage string, cause error) error {
+	if err := s.store.RecordLoginFailure(ctx, userID, now); err != nil {
+		return fmt.Errorf("record login failure: %w", err)
+	}
+	return invalidCredentials(stage, cause)
 }
 
 func invalidCredentials(stage string, cause error) error {
@@ -138,12 +170,15 @@ func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method str
 	now := s.now()
 	session, err := s.store.SessionByToken(ctx, security.TokenDigest(token), now)
 	if err != nil {
-		return Principal{}, ErrInvalidCredentials
+		if errors.Is(err, store.ErrNotFound) {
+			return Principal{}, ErrInvalidCredentials
+		}
+		return Principal{}, fmt.Errorf("look up session: %w", err)
 	}
 	if method != "GET" && method != "HEAD" && method != "OPTIONS" {
 		got := security.TokenDigest(csrfToken)
 		if len(got) != len(session.CSRFHash) || subtle.ConstantTimeCompare(got, session.CSRFHash) != 1 {
-			return Principal{}, errors.New("invalid CSRF token")
+			return Principal{}, ErrInvalidCSRF
 		}
 	}
 	principal := Principal{User: session.User, SessionID: session.ID}

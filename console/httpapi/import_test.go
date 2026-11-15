@@ -75,7 +75,7 @@ func testHTTPCAImport(t *testing.T, handler http.Handler, cfg consoleconfig.Conf
 		csrf, host string
 		status     int
 	}{
-		{nil, "", cfg.ConsoleHostname, 401}, {userCookie, csrf, cfg.ConsoleHostname, 403}, {rootCookie, "", cfg.ConsoleHostname, 401}, {rootCookie, csrf, cfg.PublicHostname, 404},
+		{nil, "", cfg.ConsoleHostname, 401}, {userCookie, csrf, cfg.ConsoleHostname, 403}, {rootCookie, "", cfg.ConsoleHostname, 403}, {rootCookie, csrf, cfg.PublicHostname, 404},
 	} {
 		w := request(input, tc.cookie, tc.csrf, "", tc.host)
 		if w.Code != tc.status {

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strings"
@@ -29,9 +31,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		IP: s.clientIP(r), UserAgent: r.UserAgent(),
 	})
 	if err != nil {
+		if errors.Is(err, auth.ErrSecondFactorRequired) {
+			_ = s.auditLogin(r, nil, "denied")
+			problem(w, http.StatusUnauthorized, "second_factor_required", "Super administrator login requires a fresh TOTP code (SHA-256, 6 digits, 30 seconds)")
+			return
+		}
 		s.logger.Warn("login denied", "request_id", requestID(r), "error", err,
 			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail))
 		_ = s.auditLogin(r, nil, "denied")
+		if !errors.Is(err, auth.ErrInvalidCredentials) {
+			problem(w, http.StatusServiceUnavailable, "authentication_unavailable", "Authentication is temporarily unavailable")
+			return
+		}
 		problem(w, http.StatusUnauthorized, "invalid_credentials", "Login credentials or required second factors are invalid")
 		return
 	}
@@ -250,6 +261,10 @@ func (s *Server) verifyRootStepUp(r *http.Request, password, code string) error 
 	if err != nil {
 		return err
 	}
+	digest := sha256.Sum256(s.config.RootUserTOTPSecret)
+	if len(fresh.RootTOTPSecretHash) > 0 && subtle.ConstantTimeCompare(fresh.RootTOTPSecretHash, digest[:]) != 1 {
+		return errors.New("root TOTP configuration changed; restart this process")
+	}
 	ok, err := security.VerifyPassword(password, fresh.PasswordHash)
 	if err != nil || !ok {
 		return errors.New("invalid password")
@@ -258,5 +273,5 @@ func (s *Server) verifyRootStepUp(r *http.Request, password, code string) error 
 	if err != nil {
 		return err
 	}
-	return s.store.AcceptRootStepUp(r.Context(), fresh.ID, fresh.PasswordHash, step)
+	return s.store.AcceptRootStepUp(r.Context(), fresh.ID, fresh.PasswordHash, fresh.RootTOTPSecretHash, step)
 }

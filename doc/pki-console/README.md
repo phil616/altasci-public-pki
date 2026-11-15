@@ -29,6 +29,7 @@ Nginx 示例见 [nginx.conf.example](nginx.conf.example)，systemd 单元见
 | --- | --- |
 | 业务配置、授权与签发 | [业务指南](enterprise-pki-web-setup.md) |
 | 日常运维与故障排查 | [运维指南](operations-runbook.md) |
+| 本地认证检查与登录故障修复记录 | [认证检查快照](authentication-review-2026-11-15.md) |
 | 备份、恢复、迁移与导出 | [数据维护](deployment-migration-export.md) |
 | 独立 CA、凭据授权与 CSR 自动签发 | [独立签发策略及接入](independent-signing.md) |
 | 时间戳服务 | [TSA](tsa.md) |
@@ -73,7 +74,7 @@ set +a
 | `PUBLIC_BASE_URL` | 公开服务 HTTPS origin，不含路径 |
 | `CONSOLE_BASE_URL` | 管理控制台 HTTPS origin，不含路径 |
 | `ROOT_USER_EMAIL` | 超级管理员邮箱/登录名 |
-| `ROOT_USER_PASSWORD` | 超级管理员密码，至少 32 字节，登录输入上限 1024 字节；建议随机 ASCII |
+| `ROOT_USER_PASSWORD` | 超级管理员密码，32–1024 字节；建议随机 ASCII，按原文校验，不裁剪空格 |
 | `ROOT_USER_TOTP_SECRET` | 至少 20 随机字节的无填充 Base32 编码；SHA-256、6 位、30 秒 |
 | `PKI_MASTER_KEY_ACTIVE_ID` | 新加密信封使用的密钥 ID |
 | `PKI_MASTER_KEYS` | JSON 对象；每个值是 32 字节密钥的标准 Base64 编码 |
@@ -94,6 +95,7 @@ set +a
 [2026-11-15 安全与文档复核](security-docs-review-2026-11-15.md)。
 
 - 超级管理员使用本地密码和 TOTP；普通用户、运维人员使用本地账户密码。
+  Web 登录始终显示动态验证码输入框，服务器根据账户角色决定是否必填。
 - 服务器端会话使用 Secure、HttpOnly、SameSite=Strict 的 `__Host-pki_session`
   Cookie。写请求仍验证 CSRF token，登录与敏感导出拒绝复用已接受的 TOTP。
 - 超级管理员私钥导出要求重新输入当前密码与未使用的 TOTP。密码错误、账户锁定、角色权限、
@@ -104,6 +106,7 @@ set +a
 - CA 和其他私钥继续以 AES-256-GCM 信封存储，KEK 保留在运维管理的环境中。
   审计记录仍只追加、按月分区并形成哈希链。
 - 数据库结构保持兼容，历史 `cf_access_sub` 审计字段保留，新的本地认证不填写该字段。
+  升级前执行 `migrate`；认证迁移保存 TOTP 密钥指纹，首次同步和后续密钥轮换会撤销 root 旧会话。
 
 ## 开发与测试
 

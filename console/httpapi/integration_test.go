@@ -214,7 +214,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	withoutCSRF.AddCookie(cookies[0])
 	csrfRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(csrfRecorder, withoutCSRF)
-	if csrfRecorder.Code != http.StatusUnauthorized {
+	if csrfRecorder.Code != http.StatusForbidden {
 		t.Fatalf("expected CSRF rejection, got %d", csrfRecorder.Code)
 	}
 
@@ -383,12 +383,36 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	t.Run("CA import HTTP contract", func(t *testing.T) {
 		testHTTPCAImport(t, handler, cfg, data, root, user)
 	})
+	// Infrastructure failures must never be presented as bad passwords or cause
+	// clients to discard otherwise valid sessions.
+	pool.Close()
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/api/v1/auth/login", `{"login":"alice","password":"anything"}`},
+		{"GET", "/api/v1/auth/session", ""},
+	} {
+		r := httptest.NewRequest(tc.method, "http://"+cfg.ConsoleHostname+tc.path, strings.NewReader(tc.body))
+		r.AddCookie(cookies[0])
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"authentication_unavailable"`) {
+			t.Fatalf("database outage was reported as a credential failure: %d %s", w.Code, w.Body.String())
+		}
+	}
 }
 
 // testStandaloneRootAuth checks password/TOTP, replay rejection, secure cookies,
 // session authentication, CSRF and credential step-up through the real API.
 func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfig.Config) {
 	t.Helper()
+	forged := httptest.NewRequest("GET", "https://"+cfg.ConsoleHostname+"/api/v1/auth/session", nil)
+	forged.Header.Set("Cf-Access-Jwt-Assertion", "forged-gateway-identity")
+	forged.Header.Set("Cf-Access-Authenticated-User-Email", cfg.RootUserEmail)
+	forged.Header.Set("X-PKI-User-Email", cfg.RootUserEmail)
+	forgedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(forgedResponse, forged)
+	if forgedResponse.Code != http.StatusUnauthorized {
+		t.Fatal("legacy gateway headers authenticated a request without a session")
+	}
 	login := func(password, code string) *httptest.ResponseRecorder {
 		body, _ := json.Marshal(map[string]string{"login": cfg.RootUserEmail, "password": password, "totp": code})
 		r := httptest.NewRequest("POST", "https://"+cfg.ConsoleHostname+"/api/v1/auth/login", bytes.NewReader(body))
@@ -397,7 +421,7 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	if w := login(cfg.RootUserPassword, ""); w.Code != http.StatusUnauthorized {
+	if w := login(cfg.RootUserPassword, ""); w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"code":"second_factor_required"`) {
 		t.Fatalf("root login without TOTP: %d %s", w.Code, w.Body.String())
 	}
 	var counter [8]byte
@@ -433,7 +457,7 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 	}{
 		{"GET", "/api/v1/auth/session", "", "", 200},
 		{"GET", "/api/v1/users", "", "", 200},
-		{"POST", "/api/v1/auth/logout", "", "", 401},
+		{"POST", "/api/v1/auth/logout", "", "", 403},
 		{"POST", "/api/v1/cas/nonexistent/keys/export", result.CSRFToken, `{"password":"` + cfg.RootUserPassword + `","totp":"` + code + `"}`, 403},
 		{"POST", "/api/v1/auth/logout", result.CSRFToken, "", 204},
 		{"GET", "/api/v1/auth/session", "", "", 401},

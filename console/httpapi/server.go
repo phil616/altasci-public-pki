@@ -212,7 +212,15 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		principal, err := s.auth.Authenticate(r.Context(), cookie.Value, r.Header.Get("X-CSRF-Token"),
 			r.Method)
 		if err != nil {
-			problem(w, http.StatusUnauthorized, "authentication_failed", "Session or CSRF verification failed")
+			switch {
+			case errors.Is(err, auth.ErrInvalidCredentials):
+				problem(w, http.StatusUnauthorized, "authentication_failed", "Session verification failed")
+			case errors.Is(err, auth.ErrInvalidCSRF):
+				problem(w, http.StatusForbidden, "csrf_failed", "CSRF verification failed")
+			default:
+				s.logger.Error("authenticate session", "request_id", requestID(r), "error", err)
+				problem(w, http.StatusServiceUnavailable, "authentication_unavailable", "Authentication is temporarily unavailable")
+			}
 			return
 		}
 		ctx := context.WithValue(r.Context(), principalKey, principal)

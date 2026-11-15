@@ -14,8 +14,12 @@ the surface into an HTML meta tag for each configured hostname.
 
 The build uses TypeScript, Vite, React Router, TanStack Query and Ant Design.
 It talks only to same-origin paths, sends the HTTP-only session cookie with
-requests, keeps the CSRF token in browser local storage, and adds a fresh
-idempotency key to retry-sensitive mutations.
+requests, keeps the CSRF token in browser local storage (or memory if storage is
+blocked), and adds a fresh idempotency key to retry-sensitive mutations. With
+storage blocked, reloading requires a fresh login because `/auth/session` does
+not reissue a CSRF token. Login confirms the cookie through `/auth/session`
+before showing the console. The TOTP field is always visible; only root requires
+it (SHA-256, six digits, 30 seconds).
 
 From this directory (versions come from `package.json` and `package-lock.json`):
 

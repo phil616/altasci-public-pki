@@ -8,6 +8,8 @@ info:
     and password. Super administrators also provide an RFC 6238 SHA-256 TOTP code.
     Subsequent requests use the HttpOnly session cookie; unsafe requests also
     require the X-CSRF-Token returned at login. No external identity service is required.
+    Invalid sessions return 401; invalid CSRF tokens return 403 (csrf_failed);
+    authentication storage failures return 503 (authentication_unavailable).
     Independent Signing public endpoints instead use instance-scoped Bearer credentials.
     This separate CSR API is not ACME and does not perform domain-control challenges.
 
@@ -41,7 +43,11 @@ paths:
     post:
       tags: [Authentication]
       operationId: login
-      description: Establishes a local session. Super administrators must also supply a fresh SHA-256 TOTP code.
+      description: |
+        Establishes a local session. Super administrators must also supply a fresh SHA-256 TOTP code.
+        After a correct root password, an absent TOTP returns 401 second_factor_required without
+        increasing the account failure counter. Wrong passwords or invalid/replayed codes return
+        401 invalid_credentials and count towards account lockout; IP rate limits apply to all attempts.
       security: []
       requestBody:
         required: true
@@ -73,6 +79,7 @@ paths:
       responses:
         '204': {description: Session revoked}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -221,6 +228,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
@@ -261,6 +269,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       parameters:
@@ -287,6 +296,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       parameters:
@@ -395,6 +405,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/grants/{userID}/{permission}:
@@ -423,6 +434,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/profiles:
@@ -466,6 +478,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/profiles/{profileID}:
@@ -494,6 +507,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
     delete:
@@ -516,6 +530,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/keys/export:
@@ -601,6 +616,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       description: Super administrator only; service validation and role failures return 422.
@@ -645,6 +661,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       parameters:
@@ -676,6 +693,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /certificate-requests/{id}:
@@ -720,6 +738,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /certificate-inventory:
@@ -807,6 +826,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
   /certificates/{id}:
@@ -857,6 +877,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
@@ -879,6 +900,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       requestBody:
@@ -909,6 +931,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       requestBody:
@@ -933,6 +956,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
       requestBody:

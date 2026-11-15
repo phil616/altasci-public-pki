@@ -104,7 +104,7 @@ func TestPostgresCredentialTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := data.AcceptRootStepUp(ctx, root.ID, "root-old-hash", root.TOTPLastStep+1); err == nil {
+	if err := data.AcceptRootStepUp(ctx, root.ID, "root-old-hash", root.RootTOTPSecretHash, root.TOTPLastStep+1); err == nil {
 		t.Fatal("stale password verification authorized root key export")
 	}
 	if _, err := data.SessionByToken(ctx, rootDigest, time.Now()); err == nil {

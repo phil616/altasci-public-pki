@@ -35,6 +35,27 @@ func TestTOTPReplayProtection(t *testing.T) {
 	}
 }
 
+// RFC 6238 Appendix B SHA-256 vectors, reduced from eight to six digits.
+func TestTOTPRFC6238SHA256(t *testing.T) {
+	secret := []byte("12345678901234567890123456789012")
+	for _, tc := range []struct {
+		unix int64
+		code string
+	}{
+		{59, "119246"}, {1111111109, "084774"}, {1111111111, "062674"},
+		{1234567890, "819424"}, {2000000000, "698825"}, {20000000000, "737706"},
+	} {
+		if _, err := VerifyTOTP(secret, tc.code, time.Unix(tc.unix, 0), 0); err != nil {
+			t.Fatalf("SHA-256 vector at %d: %v", tc.unix, err)
+		}
+	}
+	for _, code := range []string{"+12345", "-12345", "123 45", "１２３４５６"} {
+		if _, err := VerifyTOTP(secret, code, time.Unix(59, 0), 0); err == nil {
+			t.Fatalf("accepted malformed TOTP")
+		}
+	}
+}
+
 func TestKeyringAuthenticatedEncryption(t *testing.T) {
 	ring := Keyring{ActiveID: "v1", Keys: map[string][]byte{"v1": bytes.Repeat([]byte{7}, 32)}}
 	envelope, err := ring.Encrypt([]byte("private key"), []byte("ca:123"))
