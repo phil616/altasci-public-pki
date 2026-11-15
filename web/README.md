@@ -1,5 +1,7 @@
 # PKI-Console web
 
+Status: current guide. Verified against source on 2026-11-15.
+
 The web application is a React 19 single-page application shared by the two
 PKI-Console hostnames:
 
@@ -15,6 +17,8 @@ It talks only to same-origin paths, sends the HTTP-only session cookie with
 requests, keeps the CSRF token in browser local storage, and adds a fresh
 idempotency key to retry-sensitive mutations.
 
+From this directory (versions come from `package.json` and `package-lock.json`):
+
 ```sh
 npm ci
 npm run dev
@@ -29,3 +33,15 @@ instructions to validate the real API and database lifecycle.
 
 Use `VITE_PKI_SURFACE=console` or `VITE_PKI_SURFACE=public` only when a preview
 hostname cannot identify the surface automatically. Production always uses the surface selected by the Go server.
+
+For development, start the backend on port 8080 with
+`PKI_DEVELOPMENT_INSECURE=true`, `CONSOLE_BASE_URL=http://pki-console.localhost:5173`
+and `PUBLIC_BASE_URL=http://pki.localhost:5173`, plus all required credentials and database
+configuration. Vite serves port 5173 and proxies API/publication paths while preserving Host.
+Use the configured hostname to open the appropriate surface. Development still requires
+password/TOTP and CSRF. See [application setup](../doc/pki-console/README.md).
+
+`npm run build` builds static files only. `npm run preview` serves port 4173 without
+an API proxy; it is a static preview, not a working production deployment.
+For real API/database tests, follow the [isolated integration test instructions](../doc/pki-console/README.md#开发与测试).
+Documentation checks and update rules are in [documentation maintenance](../doc/pki-console/documentation-maintenance.md).

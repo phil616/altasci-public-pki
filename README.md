@@ -20,19 +20,23 @@ A complete [Nginx example](doc/pki-console/nginx.conf.example) and
 The [OpenAPI contract](doc/pki-console/openapi.yaml) and
 [desktop client guide](doc/pki-console/desktop-client-integration.md) describe
 local session authentication. Earlier Cloudflare deployment and incident
-records are retained as historical documentation.
+records are retained in [the historical archive](doc/pki-console/archive/cloudflare-2026/README.md).
+See [build and release](doc/pki-console/release.md) and
+[documentation maintenance](doc/pki-console/documentation-maintenance.md) for current checks.
 
-# CFSSL
+# CFSSL toolkit reference
 
-[![Build Status](https://travis-ci.org/cloudflare/cfssl.svg?branch=master)](https://travis-ci.org/cloudflare/cfssl)
-[![Coverage Status](http://codecov.io/github/cloudflare/cfssl/coverage.svg?branch=master)](http://codecov.io/github/cloudflare/cfssl?branch=master)
-[![GoDoc](https://godoc.org/github.com/cloudflare/cfssl?status.svg)](https://godoc.org/github.com/cloudflare/cfssl)
+The following section describes the inherited CFSSL CLI and libraries, including
+upstream installation links. It is not the deployment procedure for PKI-Console.
+This fork's build requirements are defined by [go.mod](go.mod); upstream releases
+and `go install ...@latest` do not include this fork's Console application.
+
 
 ## CloudFlare's PKI/TLS toolkit
 
 CFSSL is CloudFlare's PKI/TLS swiss army knife. It is both a command line
 tool and an HTTP API server for signing, verifying, and bundling TLS
-certificates. It requires Go 1.20+ to build.
+certificates. Build this fork using the Go version and toolchain in `go.mod`.
 
 Note that certain linux distributions have certain algorithms removed
 (RHEL-based distributions in particular), so the golang from the
@@ -54,12 +58,12 @@ CFSSL consists of:
 ### Building
 
 Building cfssl requires a
-[working Go 1.20+ installation](http://golang.org/doc/install).
+[working Go installation](https://go.dev/doc/install) matching `go.mod`.
 
 ```
 $ git clone git@github.com:cloudflare/cfssl.git
 $ cd cfssl
-$ make
+$ make all
 $ make install
 ```
 
@@ -85,7 +89,7 @@ You can set the `GOOS` and `GOARCH` environment variables to have Go cross compi
 
 ### Installation
 
-Installation requires a [working Go 1.20+ installation](http://golang.org/doc/install).
+Installation requires a [working Go installation](https://go.dev/doc/install) matching `go.mod`.
 Alternatively, [prebuilt binaries are available](https://github.com/cloudflare/cfssl/releases)
 
 ```

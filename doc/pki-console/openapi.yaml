@@ -8,21 +8,30 @@ info:
     and password. Super administrators also provide an RFC 6238 SHA-256 TOTP code.
     Subsequent requests use the HttpOnly session cookie; unsafe requests also
     require the X-CSRF-Token returned at login. No external identity service is required.
+
+    Contract verified against source on 2026-11-15; domains are examples. The info.version
+    identifies this API contract, not the deployed binary version from /version. JSON input
+    rejects unknown fields and is limited to 1 MiB. Byte limits in the implementation
+    apply to UTF-8 data, including passwords and idempotency keys. Lists may contain
+    items: null where documented when no records exist. Production serves distinct
+    Console and public hostnames; unconfigured Host returns 421. Console requests
+    with an incompatible Origin return 403. Only documented idempotent operations
+    accept an optional Idempotency-Key. Response schemas describe current fields,
+    not a guarantee of redaction of public certificate metadata.
 servers:
-  - url: https://pki-console.altasci.com/api/v1
-    description: Console API
+  - {url: 'https://pki-console.example.com/api/v1', description: Console API}
 tags:
-  - name: Authentication
-  - name: Users
-  - name: Certificate Authorities
-  - name: Certificate Requests
-  - name: Certificates
-  - name: Signing Profiles
-  - name: Timestamping
-  - name: Audit
-  - name: Utilities
-  - name: Operations
-  - name: Public PKI
+  - {name: Authentication}
+  - {name: Users}
+  - {name: Certificate Authorities}
+  - {name: Certificate Requests}
+  - {name: Certificates}
+  - {name: Signing Profiles}
+  - {name: Timestamping}
+  - {name: Audit}
+  - {name: Utilities}
+  - {name: Operations}
+  - {name: Public PKI}
 paths:
   /auth/login:
     post:
@@ -34,20 +43,22 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
+            schema: {$ref: '#/components/schemas/LoginRequest'}
       responses:
         '200':
           description: Authenticated. The response also sets the secure session cookie.
           headers:
             Set-Cookie:
               description: Host-only HttpOnly PKI-Console session cookie. Retain it in the client's cookie jar.
-              schema: { type: string }
+              schema: {type: string}
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/LoginResponse'
-        '401': { $ref: '#/components/responses/Problem' }
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /auth/logout:
     post:
       tags: [Authentication]
@@ -56,8 +67,11 @@ paths:
         - sessionCookie: []
           csrfToken: []
       responses:
-        '204': { description: Session revoked }
-        '401': { $ref: '#/components/responses/Problem' }
+        '204': {description: Session revoked}
+        '401': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /auth/session:
     get:
       tags: [Authentication]
@@ -71,22 +85,28 @@ paths:
                 type: object
                 required: [user]
                 properties:
-                  user: { $ref: '#/components/schemas/User' }
-        '401': { $ref: '#/components/responses/Problem' }
+                  user: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /users:
     get:
       tags: [Users]
       operationId: listUsers
       responses:
         '200':
-          description: Users
+          description: Records visible to caller
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/User' } }
-        '403': { $ref: '#/components/responses/Problem' }
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/User'}
+                required: [items]
+        '403': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
     post:
       security:
         - sessionCookie: []
@@ -101,16 +121,37 @@ paths:
               type: object
               required: [username, role, password]
               properties:
-                username: { type: string, minLength: 3, maxLength: 128 }
-                email: { type: [string, 'null'], format: email }
-                role: { type: string, enum: [operator, user] }
-                password: { type: string, minLength: 15, maxLength: 128, writeOnly: true }
+                username: {type: string, minLength: 3, maxLength: 128, description: 3–128 UTF-8 bytes after trimming.}
+                email:
+                  type: [string, 'null']
+                  format: email
+                role:
+                  type: string
+                  enum: [operator, user]
+                password:
+                  type: string
+                  minLength: 15
+                  maxLength: 128
+                  writeOnly: true
+                  description: 15–128 UTF-8 bytes.
+              additionalProperties: false
       responses:
         '201':
           description: User created
-          content: { application/json: { schema: { $ref: '#/components/schemas/User' } } }
-        '403': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
   /users/{id}/status:
     patch:
       security:
@@ -119,8 +160,8 @@ paths:
       tags: [Users]
       operationId: setUserStatus
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
@@ -129,10 +170,20 @@ paths:
               type: object
               required: [status]
               properties:
-                status: { type: string, enum: [active, disabled] }
+                status:
+                  type: string
+                  enum: [active, disabled]
+              additionalProperties: false
       responses:
-        '204': { description: User status updated; disabling revokes active sessions }
-        '403': { $ref: '#/components/responses/Problem' }
+        '204': {description: User status updated; disabling revokes active sessions}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /users/{id}/password:
     put:
       security:
@@ -141,8 +192,8 @@ paths:
       tags: [Users]
       operationId: resetUserPassword
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
@@ -151,10 +202,24 @@ paths:
               type: object
               required: [password]
               properties:
-                password: { type: string, minLength: 15, maxLength: 128, writeOnly: true }
+                password:
+                  type: string
+                  minLength: 15
+                  maxLength: 128
+                  writeOnly: true
+                  description: 15–128 UTF-8 bytes.
+              additionalProperties: false
       responses:
-        '204': { description: Password replaced and all existing sessions revoked }
-        '404': { $ref: '#/components/responses/Problem' }
+        '204': {description: Password replaced and all existing sessions revoked}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
   /cas:
     get:
       tags: [Certificate Authorities]
@@ -167,7 +232,11 @@ paths:
               schema:
                 type: object
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/CertificateAuthority' } }
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/CertificateAuthority'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /cas/roots:
     post:
       security:
@@ -175,13 +244,25 @@ paths:
           csrfToken: []
       tags: [Certificate Authorities]
       operationId: createRootCA
-      requestBody: { $ref: '#/components/requestBodies/CreateCA' }
+      requestBody: {$ref: '#/components/requestBodies/CreateCA'}
       responses:
         '201':
           description: Root CA created
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateAuthority' } } }
-        '403': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateAuthority'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      description: Super administrator only. Current service validation failures, including insufficient role, return
+        422.
   /cas/intermediates:
     post:
       security:
@@ -189,13 +270,25 @@ paths:
           csrfToken: []
       tags: [Certificate Authorities]
       operationId: createIntermediateCA
-      requestBody: { $ref: '#/components/requestBodies/CreateCA' }
+      requestBody: {$ref: '#/components/requestBodies/CreateCA'}
       responses:
         '201':
           description: Intermediate CA created
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateAuthority' } } }
-        '403': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateAuthority'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      description: Super administrator only. Current service validation failures, including insufficient role, return
+        422.
   /cas/import:
     post:
       security:
@@ -210,38 +303,64 @@ paths:
         certificate, subject, validity and path constraints are preserved; a
         default signing profile and encrypted delegated OCSP responder are created.
         Historical issuance and revocation records are not imported.
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ImportCA' }
+            schema: {$ref: '#/components/schemas/ImportCA'}
       responses:
         '201':
           description: CA imported; response never includes private key material
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateAuthority' } } }
-        '401': { $ref: '#/components/responses/Problem' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '409': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateAuthority'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}:
     get:
       tags: [Certificate Authorities]
       operationId: getCA
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: Certificate authority
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateAuthority' } } }
-        '404': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateAuthority'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /cas/{id}/grants:
     get:
       tags: [Certificate Authorities]
       operationId: listCAGrants
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
-        '200': { description: Operator grants on this intermediate CA }
-        '403': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Records visible to caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/CAGrant'}
+                required: [items]
+        '403': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
     post:
       security:
         - sessionCookie: []
@@ -249,8 +368,8 @@ paths:
       tags: [Certificate Authorities]
       operationId: createCAGrant
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
@@ -259,11 +378,21 @@ paths:
               type: object
               required: [user_id, permission]
               properties:
-                user_id: { type: string, format: uuid }
-                permission: { type: string, enum: [view_requests, approve, issue, revoke] }
+                user_id: {type: string, format: uuid}
+                permission:
+                  type: string
+                  enum: [view_requests, approve, issue, revoke]
+              additionalProperties: false
       responses:
-        '204': { description: Grant created }
-        '422': { $ref: '#/components/responses/Problem' }
+        '204': {description: Grant created}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/grants/{userID}/{permission}:
     delete:
       security:
@@ -272,18 +401,32 @@ paths:
       tags: [Certificate Authorities]
       operationId: deleteCAGrant
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - { name: userID, in: path, required: true, schema: { type: string, format: uuid } }
-        - { name: permission, in: path, required: true, schema: { type: string } }
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - name: userID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: permission
+          in: path
+          required: true
+          schema: {type: string}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
-        '204': { description: Grant revoked }
-        '404': { $ref: '#/components/responses/Problem' }
+        '204': {description: Grant revoked}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/profiles:
     get:
       tags: [Signing Profiles]
       operationId: listSigningProfiles
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: Signing profiles
@@ -292,7 +435,11 @@ paths:
               schema:
                 type: object
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/SigningProfile' } }
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/SigningProfile'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
     post:
       security:
         - sessionCookie: []
@@ -300,14 +447,23 @@ paths:
       tags: [Signing Profiles]
       operationId: createSigningProfile
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody: { $ref: '#/components/requestBodies/SigningProfile' }
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/SigningProfile'}
       responses:
         '201':
           description: Signing profile created
-          content: { application/json: { schema: { $ref: '#/components/schemas/SigningProfile' } } }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SigningProfile'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/profiles/{profileID}:
     put:
       security:
@@ -316,14 +472,26 @@ paths:
       tags: [Signing Profiles]
       operationId: updateSigningProfile
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - { name: profileID, in: path, required: true, schema: { type: string, format: uuid } }
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody: { $ref: '#/components/requestBodies/SigningProfile' }
+        - {$ref: '#/components/parameters/ID'}
+        - name: profileID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/SigningProfile'}
       responses:
         '200':
           description: Signing profile updated
-          content: { application/json: { schema: { $ref: '#/components/schemas/SigningProfile' } } }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SigningProfile'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
     delete:
       security:
         - sessionCookie: []
@@ -331,12 +499,21 @@ paths:
       tags: [Signing Profiles]
       operationId: deleteSigningProfile
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - { name: profileID, in: path, required: true, schema: { type: string, format: uuid } }
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - name: profileID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
-        '204': { description: Non-default unreferenced profile deleted }
-        '409': { $ref: '#/components/responses/Problem' }
+        '204': {description: Non-default unreferenced profile deleted}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /cas/{id}/keys/export:
     post:
       security:
@@ -344,7 +521,8 @@ paths:
           csrfToken: []
       tags: [Certificate Authorities]
       operationId: exportCAKey
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       requestBody:
         required: true
         content:
@@ -353,20 +531,32 @@ paths:
               type: object
               required: [password, totp]
               properties:
-                password: { type: string, writeOnly: true }
-                totp: { type: string, pattern: '^[0-9]{6}$', writeOnly: true }
+                password: {type: string, writeOnly: true}
+                totp: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
+              additionalProperties: false
       responses:
         '200':
           description: PKCS#8 PEM private key; never cache this response.
           headers:
-            Cache-Control: { schema: { type: string, const: 'no-store, max-age=0' } }
-          content: { application/x-pem-file: { schema: { type: string } } }
-        '403': { $ref: '#/components/responses/Problem' }
+            Cache-Control:
+              schema: {type: string, const: 'no-store, max-age=0'}
+          content:
+            application/x-pem-file:
+              schema: {type: string}
+        '403': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      description: Super administrator re-enters the current password and a fresh unused TOTP. Not idempotent. Step-up
+        failure or its per-user rate limit returns 403.
   /cas/{id}/timestamp-authorities:
     get:
       tags: [Timestamping]
       operationId: listTimestampAuthorities
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: Timestamp authorities issued by this certificate authority.
@@ -376,8 +566,11 @@ paths:
                 type: object
                 required: [items]
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/TimestampAuthority' } }
-        '401': { $ref: '#/components/responses/Problem' }
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/TimestampAuthority'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
     post:
       security:
         - sessionCookie: []
@@ -385,35 +578,46 @@ paths:
       tags: [Timestamping]
       operationId: createTimestampAuthority
       parameters:
-        - $ref: '#/components/parameters/ID'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/CreateTimestampAuthority'
+            schema: {$ref: '#/components/schemas/CreateTimestampAuthority'}
       responses:
         '201':
           description: Timestamp authority created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TimestampAuthority' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+              schema: {$ref: '#/components/schemas/TimestampAuthority'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      description: Super administrator only; service validation and role failures return 422.
   /certificate-requests:
     get:
       tags: [Certificate Requests]
       operationId: listCertificateRequests
       responses:
         '200':
-          description: Requests visible to the caller
+          description: Records visible to caller
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/CertificateRequest' } }
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/CertificateRequest'}
+                required: [items]
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
     post:
       security:
         - sessionCookie: []
@@ -424,12 +628,23 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CreateCertificateRequest' }
+            schema: {$ref: '#/components/schemas/CreateCertificateRequest'}
       responses:
         '201':
           description: Request submitted
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateRequest' } } }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateRequest'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
   /certificate-requests/{id}/approve:
     post:
       security:
@@ -437,21 +652,43 @@ paths:
           csrfToken: []
       tags: [Certificate Requests]
       operationId: approveCertificateRequest
-      parameters: [{ $ref: '#/components/parameters/ID' }]
-      requestBody: { $ref: '#/components/requestBodies/Decision' }
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/Decision'}
       responses:
-        '202': { description: Request queued for idempotent issuance }
-        '409': { $ref: '#/components/responses/Problem' }
+        '202':
+          description: Decision recorded; approval queues background issuance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string, format: uuid}
+                  status: {type: string, const: approved}
+                required: [id, status]
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /certificate-requests/{id}:
     get:
       tags: [Certificate Requests]
       operationId: getCertificateRequest
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: Certificate request visible to the caller
-          content: { application/json: { schema: { $ref: '#/components/schemas/CertificateRequest' } } }
-        '404': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateRequest'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /certificate-requests/{id}/reject:
     post:
       security:
@@ -459,24 +696,42 @@ paths:
           csrfToken: []
       tags: [Certificate Requests]
       operationId: rejectCertificateRequest
-      parameters: [{ $ref: '#/components/parameters/ID' }]
-      requestBody: { $ref: '#/components/requestBodies/Decision' }
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/Decision'}
       responses:
-        '202': { description: Request rejected }
-        '409': { $ref: '#/components/responses/Problem' }
+        '202':
+          description: Decision recorded; approval queues background issuance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string, format: uuid}
+                  status: {type: string, const: rejected}
+                required: [id, status]
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /certificate-inventory:
     get:
       tags: [Certificates]
       operationId: listCertificateInventory
-      description: >-
-        Lists certificate requests together with their resulting certificates. Super administrators see the
-        entire system; operators see their own requests, decisions, and authorized CA records; ordinary users
+      description: Lists certificate requests together with their resulting certificates. Super administrators see
+        the entire system; operators see their own requests, decisions, and authorized CA records; ordinary users
         see only their own records.
       parameters:
         - name: status
           in: query
           required: false
-          schema: { type: string, enum: [pending, issued, rejected, failed] }
+          schema:
+            type: string
+            enum: [pending, issued, rejected, failed]
           description: Workflow group. Pending includes pending, approved, and issuing requests.
       responses:
         '200':
@@ -487,21 +742,30 @@ paths:
                 type: object
                 required: [items]
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/CertificateInventoryItem' } }
-        '400': { $ref: '#/components/responses/Problem' }
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/CertificateInventoryItem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /certificates:
     get:
       tags: [Certificates]
       operationId: listCertificates
       responses:
         '200':
-          description: Certificates visible to the caller
+          description: Records visible to caller
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/Certificate' } }
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/CertificateSummary'}
+                required: [items]
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /certificates/{id}/revoke:
     post:
       security:
@@ -509,39 +773,67 @@ paths:
           csrfToken: []
       tags: [Certificates]
       operationId: revokeCertificate
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [reason]
               properties:
-                reason: { type: integer, minimum: 0, maximum: 10, not: { const: 7 } }
-                comment: { type: string, maxLength: 2000 }
+                reason:
+                  type: integer
+                  default: 0
+                  minimum: 0
+                  maximum: 10
+                  not: {const: 7}
+                comment: {type: string}
+              additionalProperties: false
       responses:
         '200':
           description: Certificate revoked and CRL regenerated
-          content: { application/json: { schema: { $ref: '#/components/schemas/Certificate' } } }
-        '422': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Certificate'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
   /certificates/{id}:
     get:
       tags: [Certificates]
       operationId: getCertificate
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
-        '200': { description: Certificate visible to the caller }
-        '404': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Certificate'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /certificates/{id}/download:
     get:
       tags: [Certificates]
       operationId: downloadCertificate
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: PEM certificate chain
-          content: { application/x-pem-file: { schema: { type: string } } }
+          content:
+            application/x-pem-file:
+              schema: {type: string}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /certificates/{id}/private-key/download:
     post:
       security:
@@ -549,12 +841,23 @@ paths:
           csrfToken: []
       tags: [Certificates]
       operationId: downloadOneTimePrivateKey
-      parameters: [{ $ref: '#/components/parameters/ID' }]
+      parameters:
+        - {$ref: '#/components/parameters/ID'}
       responses:
         '200':
           description: One-time PKCS#8 PEM private key owned by the caller
-          content: { application/x-pem-file: { schema: { type: string } } }
-        '410': { $ref: '#/components/responses/Problem' }
+          content:
+            application/x-pem-file:
+              schema: {type: string}
+        '410': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+      description: Only the certificate owner may claim a server-generated private key within 24 hours. The stored
+        artifact is erased before sending the response; transport failure does not allow retry. No idempotency support.
   /utilities/certinfo:
     post:
       security:
@@ -563,8 +866,22 @@ paths:
       tags: [Utilities]
       operationId: certificateInfo
       responses:
-        '200': { description: Parsed certificate metadata }
-        '422': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CertificateInfo'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CertificateInfoInput'}
   /utilities/csr:
     post:
       security:
@@ -573,8 +890,28 @@ paths:
       tags: [Utilities]
       operationId: generateCSR
       responses:
-        '200': { description: Generated CSR and uncached private key }
-        '422': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  csr_pem: {type: string}
+                  private_key_pem: {type: string, description: Returned once in this response; not saved for later
+                      download.}
+                required: [csr_pem, private_key_pem]
+        '422': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GenerateCSRInput'}
   /utilities/bundle:
     post:
       security:
@@ -583,17 +920,47 @@ paths:
       tags: [Utilities]
       operationId: bundleCertificates
       responses:
-        '200': { description: CFSSL optimized certificate bundle }
-        '422': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Bundle'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BundleInput'}
+      description: Builds a CFSSL bundle from submitted certificates, roots and intermediates. AIA network fetching
+        is disabled; provide missing intermediates explicitly. Omitted roots use the system trust store.
   /audit-events:
     get:
       tags: [Audit]
       operationId: listAuditEvents
       parameters:
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 100}
       responses:
-        '200': { description: Append-only hash-chained audit records }
-        '403': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Records visible to caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: [array, 'null']
+                    items: {$ref: '#/components/schemas/AuditRecord'}
+                required: [items]
+        '403': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
   /metrics:
     get:
       tags: [Operations]
@@ -601,37 +968,88 @@ paths:
       responses:
         '200':
           description: Prometheus exposition format for operators and the super administrator
-          content: { text/plain: { schema: { type: string } } }
+          content:
+            text/plain:
+              schema: {type: string}
+        '500': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
   /health/live:
     get:
       tags: [Operations]
       operationId: live
       security: []
-      responses: { '200': { description: Process is live } }
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, const: ok}
+                required: [status]
+        '500': {$ref: '#/components/responses/Problem'}
+      servers:
+        - {url: 'https://pki-console.example.com/api/v1', description: Console liveness}
+        - {url: 'https://pki.example.com', description: Public liveness}
   /health/ready:
     get:
       tags: [Operations]
       operationId: ready
       security: []
-      responses: { '200': { description: PostgreSQL is reachable } }
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, const: ready}
+                required: [status]
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /version:
     get:
       tags: [Operations]
       operationId: version
       security: []
-      responses: { '200': { description: PKI-Console and upstream CFSSL versions } }
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: {type: string, const: PKI-Console}
+                  version: {type: string}
+                  cfssl_upstream: {type: string}
+                required: [name, version, cfssl_upstream]
+        '500': {$ref: '#/components/responses/Problem'}
   /pki/v1/authorities:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: publicAuthorities
       security: []
       responses:
-        '200': { description: Public CA certificates and chains }
+        '200':
+          description: Records visible to caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/CertificateAuthority'}
+                required: [items]
   /pki/v1/certificates/by-fingerprint/{fingerprint}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: publicCertificateByFingerprint
@@ -640,54 +1058,94 @@ paths:
         - name: fingerprint
           in: path
           required: true
-          schema: { type: string, pattern: '^[A-Fa-f0-9:]{64,95}$' }
+          schema: {type: string, pattern: '^[A-Fa-f0-9:]{64,95}$'}
       responses:
         '200':
           description: Exact certificate match
-          content: { application/json: { schema: { $ref: '#/components/schemas/Certificate' } } }
-        '404': { $ref: '#/components/responses/Problem' }
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Certificate'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
   /pki/v1/certificates/by-issuer/{issuer}/serial/{serial}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: publicCertificateByIssuerSerial
       security: []
       parameters:
-        - { name: issuer, in: path, required: true, schema: { type: string } }
-        - { name: serial, in: path, required: true, schema: { type: string, pattern: '^[0-9]+$' } }
+        - name: issuer
+          in: path
+          required: true
+          schema: {type: string}
+          description: Issuer CA slug, not UUID or distinguished name.
+        - name: serial
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[0-9]+$'}
       responses:
-        '200': { description: Exact certificate match }
-        '404': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Certificate'}
+        '404': {$ref: '#/components/responses/Problem'}
   /pki/v1/status/{issuer}/{serial}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: publicCertificateStatus
       security: []
       parameters:
-        - { name: issuer, in: path, required: true, schema: { type: string } }
-        - { name: serial, in: path, required: true, schema: { type: string, pattern: '^[0-9]+$' } }
+        - name: issuer
+          in: path
+          required: true
+          schema: {type: string}
+          description: Issuer CA slug, not UUID or distinguished name.
+        - name: serial
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[0-9]+$'}
       responses:
-        '200': { description: Certificate good, revoked, or expired state }
-        '404': { $ref: '#/components/responses/Problem' }
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issuer: {type: string}
+                  serial: {type: string}
+                  status:
+                    type: string
+                    enum: [good, revoked, expired]
+                  not_before: {type: string, format: date-time}
+                  not_after: {type: string, format: date-time}
+                required: [issuer, serial, status, not_before, not_after]
+        '404': {$ref: '#/components/responses/Problem'}
   /issuers/{slug}.cer:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: getIssuerCertificate
       security: []
       parameters:
-        - { name: slug, in: path, required: true, schema: { type: string } }
+        - name: slug
+          in: path
+          required: true
+          schema: {type: string}
       responses:
         '200':
           description: DER encoded issuer certificate
-          content: { application/pkix-cert: { schema: { type: string, contentEncoding: binary } } }
+          content:
+            application/pkix-cert: {}
+        '404': {$ref: '#/components/responses/Problem'}
   /crl/{slug}.crl:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: getCRL
@@ -696,14 +1154,18 @@ paths:
         - name: slug
           in: path
           required: true
-          schema: { type: string }
+          schema: {type: string}
       responses:
         '200':
           description: DER encoded X.509 CRL
-          content: { application/pkix-crl: { schema: { type: string, contentEncoding: binary } } }
+          content:
+            application/pkix-crl: {}
+        '429': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /ocsp/{slug}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     post:
       tags: [Public PKI]
       operationId: postOCSP
@@ -712,53 +1174,69 @@ paths:
         - name: slug
           in: path
           required: true
-          schema: { type: string }
+          schema: {type: string}
       requestBody:
         required: true
-        content: { application/ocsp-request: { schema: { type: string, contentEncoding: binary } } }
+        content:
+          application/ocsp-request: {}
       responses:
         '200':
           description: DER encoded OCSP response, including protocol-level error responses.
-          content: { application/ocsp-response: { schema: { type: string, contentEncoding: binary } } }
+          content:
+            application/ocsp-response: {}
+        '429': {$ref: '#/components/responses/Problem'}
   /ocsp/{slug}/{request}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     get:
       tags: [Public PKI]
       operationId: getOCSP
       security: []
       parameters:
-        - { name: slug, in: path, required: true, schema: { type: string } }
-        - { name: request, in: path, required: true, schema: { type: string, description: Base64 encoded DER OCSP request } }
+        - name: slug
+          in: path
+          required: true
+          schema: {type: string}
+        - name: request
+          in: path
+          required: true
+          schema: {type: string, description: Base64 encoded DER OCSP request}
       responses:
         '200':
           description: DER encoded OCSP response
-          content: { application/ocsp-response: { schema: { type: string, contentEncoding: binary } } }
+          content:
+            application/ocsp-response: {}
+        '429': {$ref: '#/components/responses/Problem'}
   /tsa/{slug}:
     servers:
-      - { url: 'https://pki.altasci.com', description: Public PKI publication service }
+      - {url: 'https://pki.example.com', description: Public PKI publication service}
     post:
       tags: [Timestamping, Public PKI]
       operationId: createTimestamp
       security: []
       parameters:
-        - { name: slug, in: path, required: true, schema: { type: string } }
+        - name: slug
+          in: path
+          required: true
+          schema: {type: string}
       requestBody:
         required: true
         content:
-          application/timestamp-query:
-            schema: { type: string, contentEncoding: binary, maxLength: 65536 }
+          application/timestamp-query: {}
       responses:
         '200':
           description: DER encoded RFC 3161 timestamp reply, including protocol-level rejection responses.
           headers:
-            Cache-Control: { schema: { type: string, const: no-store } }
+            Cache-Control:
+              schema: {type: string, const: no-store}
           content:
-            application/timestamp-reply:
-              schema: { type: string, contentEncoding: binary }
-        '413': { $ref: '#/components/responses/Problem' }
-        '415': { $ref: '#/components/responses/Problem' }
-        '429': { $ref: '#/components/responses/Problem' }
+            application/timestamp-reply: {}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+      description: TSA requests are limited to 64 KiB; SHA-256/384/512 only. HTTP 200 may contain a protocol rejection.
+        HTTP-level errors return problem JSON. Production signing requires healthy Linux kernel NTP state.
 components:
   securitySchemes:
     sessionCookie:
@@ -776,19 +1254,20 @@ components:
       name: id
       in: path
       required: true
-      schema: { type: string, format: uuid }
+      schema: {type: string, format: uuid}
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: false
-      description: 8-128 character key retained for 24 hours; reuse with different content returns 409.
-      schema: { type: string, minLength: 8, maxLength: 128 }
+      description: Optional 8–128 UTF-8 byte key retained for 24 hours, scoped to user and route. Same method/URL/body
+        replays stored status/body; changed content returns 409. Responses >=500 are not cached.
+      schema: {type: string, minLength: 8, maxLength: 128}
   responses:
     Problem:
       description: RFC 9457 problem detail
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+          schema: {$ref: '#/components/schemas/Problem'}
   requestBodies:
     CreateCA:
       required: true
@@ -796,13 +1275,17 @@ components:
         application/json:
           schema:
             type: object
-            required: [name, slug, subject, path_length]
+            required: [name, slug, subject]
             properties:
-              name: { type: string }
-              slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
-              parent_ca_id: { type: string, format: uuid }
-              path_length: { type: integer, minimum: 0, maximum: 5 }
-              subject: { $ref: '#/components/schemas/Subject' }
+              name: {type: string}
+              slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$'}
+              parent_ca_id:
+                type: string
+                format: uuid
+                description: Required for intermediate creation (active root CA); absent for roots.
+              path_length: {type: integer, minimum: 0, maximum: 5, default: 0}
+              subject: {$ref: '#/components/schemas/Subject'}
+            additionalProperties: false
     Decision:
       required: true
       content:
@@ -810,67 +1293,84 @@ components:
           schema:
             type: object
             properties:
-              comment: { type: string, maxLength: 2000 }
+              comment: {type: string}
     SigningProfile:
       required: true
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/SigningProfile' }
+          schema: {$ref: '#/components/schemas/SigningProfileInput'}
   schemas:
     Problem:
       type: object
       required: [type, title, status, detail, code]
       properties:
-        type: { type: string, format: uri }
-        title: { type: string }
-        status: { type: integer }
-        detail: { type: string }
-        code: { type: string }
+        type: {type: string, format: uri}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        code: {type: string}
     LoginRequest:
       type: object
       required: [login, password]
       properties:
-        login: { type: string }
-        password: { type: string, writeOnly: true }
-        totp: { type: string, pattern: '^[0-9]{6}$', writeOnly: true }
+        login: {type: string, description: 'Username or email, at most 254 UTF-8 bytes.'}
+        password:
+          type: string
+          writeOnly: true
+          description: At most 1024 UTF-8 bytes; super administrator additionally requires TOTP.
+        totp: {type: string, pattern: '^[0-9]{6}$', writeOnly: true}
     LoginResponse:
       type: object
       required: [user, csrf_token, expires_at]
       properties:
-        user: { $ref: '#/components/schemas/User' }
-        csrf_token: { type: string, writeOnly: true }
-        expires_at: { type: string, format: date-time }
+        user: {$ref: '#/components/schemas/User'}
+        csrf_token: {type: string}
+        expires_at: {type: string, format: date-time}
     User:
       type: object
       required: [id, username, role, status]
       properties:
-        id: { type: string, format: uuid }
-        username: { type: string }
-        email: { type: [string, 'null'], format: email }
-        role: { type: string, enum: [super_admin, operator, user] }
-        status: { type: string, enum: [active, disabled, locked] }
+        id: {type: string, format: uuid}
+        username: {type: string}
+        email:
+          type: [string, 'null']
+          format: email
+        role:
+          type: string
+          enum: [super_admin, operator, user]
+        status:
+          type: string
+          enum: [active, disabled, locked]
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     Subject:
       type: object
       required: [common_name]
       properties:
-        common_name: { type: string }
-        country: { type: string }
-        province: { type: string }
-        locality: { type: string }
-        organization: { type: string }
-        organizational_unit: { type: string }
+        common_name:
+          type: string
+          description: Required and non-blank for CA creation and server-generated leaf requests; imported certificate
+            subjects may contain an empty value.
+        country: {type: string}
+        province: {type: string}
+        locality: {type: string}
+        organization: {type: string}
+        organizational_unit: {type: string}
     ImportCA:
       type: object
       additionalProperties: false
       required: [name, slug, kind, certificate_pem, private_key_pem]
       properties:
-        name: { type: string, minLength: 1 }
-        slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
-        kind: { type: string, enum: [root, intermediate] }
+        name: {type: string, minLength: 1}
+        slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$'}
+        kind:
+          type: string
+          enum: [root, intermediate]
         parent_ca_id:
           type: string
           format: uuid
-          description: Required for intermediate CAs; must be absent for roots.
+          description: Required for intermediates; must identify the actual active signing parent, root or intermediate.
+            Absent for roots.
         certificate_pem:
           type: string
           description: Exactly one currently valid CA certificate with SKI, keyCertSign and cRLSign.
@@ -882,129 +1382,369 @@ components:
       type: object
       required: [id, slug, name, kind, status, certificate_pem, chain_pem, not_before, not_after]
       properties:
-        id: { type: string, format: uuid }
-        parent_ca_id: { type: [string, 'null'], format: uuid }
-        slug: { type: string }
-        name: { type: string }
-        kind: { type: string, enum: [root, intermediate] }
-        path_length:
-          type: integer
-          minimum: -1
-          description: Maximum subordinate CA depth; -1 means unconstrained.
-        status: { type: string }
-        subject: { $ref: '#/components/schemas/Subject' }
-        certificate_pem: { type: string }
-        chain_pem: { type: string }
-        not_before: { type: string, format: date-time }
-        not_after: { type: string, format: date-time }
+        id: {type: string, format: uuid}
+        parent_ca_id:
+          type: [string, 'null']
+          format: uuid
+        slug: {type: string}
+        name: {type: string}
+        kind:
+          type: string
+          enum: [root, intermediate]
+        path_length: {type: integer, minimum: -1, description: Maximum subordinate CA depth; -1 means unconstrained.}
+        status: {type: string}
+        subject: {$ref: '#/components/schemas/Subject'}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        serial: {type: string}
+        crl_url: {type: string}
+        ocsp_url: {type: string}
+        issuer_url: {type: string}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
     SigningProfile:
       type: object
       required: [name, default_validity_seconds, max_validity_seconds, key_usages, enabled]
       properties:
-        id: { type: string, format: uuid, readOnly: true }
-        ca_id: { type: string, format: uuid, readOnly: true }
-        name: { type: string, minLength: 1, maxLength: 128 }
-        description: { type: string }
-        default_validity_seconds: { type: integer, minimum: 1, maximum: 34300800 }
-        max_validity_seconds: { type: integer, minimum: 1, maximum: 34300800 }
-        key_usages: { type: array, minItems: 1, items: { type: string } }
-        extended_key_usages: { type: array, items: { type: string } }
-        allowed_dns_patterns: { type: array, items: { type: string, description: Go glob pattern } }
-        allowed_ip_ranges: { type: array, items: { type: string, description: IPv4 or IPv6 CIDR } }
-        allow_email_sans: { type: boolean, default: false }
-        allow_uri_sans: { type: boolean, default: false }
-        policy: { type: object, additionalProperties: true }
-        enabled: { type: boolean }
+        id: {type: string, format: uuid, readOnly: true}
+        ca_id: {type: string, format: uuid, readOnly: true}
+        name: {type: string, minLength: 1, maxLength: 128}
+        description: {type: string}
+        default_validity_seconds: {type: integer, minimum: 1}
+        max_validity_seconds: {type: integer, minimum: 1}
+        key_usages:
+          type: array
+          minItems: 1
+          items: {type: string}
+        extended_key_usages:
+          type: array
+          items: {type: string}
+        allowed_dns_patterns:
+          type: array
+          items: {type: string, description: Go glob pattern}
+        allowed_ip_ranges:
+          type: array
+          items: {type: string, description: IPv4 or IPv6 CIDR}
+        allow_email_sans: {type: boolean, default: false}
+        allow_uri_sans: {type: boolean, default: false}
+        policy: {description: 'Stored JSON metadata, possibly null.'}
+        enabled: {type: boolean}
     CreateTimestampAuthority:
       type: object
       required: [slug, name, policy_oid]
       properties:
-        slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
-        name: { type: string }
-        policy_oid: { type: string, pattern: '^[0-9]+(?:\.[0-9]+)+$' }
-        validity_seconds: { type: integer, minimum: 86400, maximum: 94608000 }
+        slug: {type: string, pattern: '^[a-z0-9-]{2,63}$'}
+        name: {type: string, description: 'Non-blank, at most 128 UTF-8 bytes after trimming.'}
+        policy_oid:
+          type: string
+          pattern: ^[0-9]+(?:\.[0-9]+)+$
+          description: Canonical dotted decimal OID, at most 128 bytes, from a branch controlled by the operator.
+        validity_seconds: {type: integer, minimum: 86400, maximum: 94608000}
     TimestampAuthority:
       type: object
-      required:
-        [id, ca_id, slug, name, policy_oid, certificate_pem, chain_pem, allowed_hashes,
-         not_before, not_after, status, created_by, created_at]
+      required: [id, ca_id, slug, name, policy_oid, certificate_pem, chain_pem, allowed_hashes, not_before, not_after,
+        status, created_by, created_at]
       properties:
-        id: { type: string, format: uuid }
-        ca_id: { type: string, format: uuid }
-        slug: { type: string }
-        name: { type: string }
-        policy_oid: { type: string }
-        certificate_pem: { type: string }
-        chain_pem: { type: string }
+        id: {type: string, format: uuid}
+        ca_id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        policy_oid: {type: string}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
         allowed_hashes:
           type: array
-          items: { type: string, enum: [SHA-256, SHA-384, SHA-512] }
-        not_before: { type: string, format: date-time }
-        not_after: { type: string, format: date-time }
-        status: { type: string, enum: [active, suspended, retired, revoked] }
-        created_by: { type: string, format: uuid }
-        created_at: { type: string, format: date-time }
+          items:
+            type: string
+            enum: [SHA-256, SHA-384, SHA-512]
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        status:
+          type: string
+          enum: [active, suspended, retired, revoked]
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
     CreateCertificateRequest:
       type: object
       required: [ca_id]
       properties:
-        ca_id: { type: string, format: uuid }
-        profile_id: { type: string, format: uuid }
-        csr_pem: { type: string }
-        subject: { $ref: '#/components/schemas/Subject' }
-        sans: { type: array, items: { type: string } }
-        server_generate_key: { type: boolean, default: false }
-        requested_validity_seconds: { type: integer, minimum: 1 }
+        ca_id: {type: string, format: uuid}
+        profile_id: {type: string, format: uuid}
+        csr_pem: {type: string}
+        subject: {$ref: '#/components/schemas/Subject'}
+        sans:
+          type: array
+          items: {type: string}
+        server_generate_key: {type: boolean, default: false}
+        requested_validity_seconds: {type: integer, minimum: 1}
+      description: Use an active intermediate CA. Unless server_generate_key=true, supply a valid signed CSR. Server
+        generation requires subject.common_name; requested validity cannot exceed the selected enabled profile.
+        Client CSR determines its own subject and SANs.
     CertificateRequest:
       type: object
       required: [id, requester_id, ca_id, profile_id, key_generation_mode, status, submitted_at]
       properties:
-        id: { type: string, format: uuid }
-        requester_id: { type: string, format: uuid }
-        ca_id: { type: string, format: uuid }
-        profile_id: { type: string, format: uuid }
-        key_generation_mode: { type: string, enum: [client_csr, server_generated] }
-        status: { type: string, enum: [pending, approved, issuing, issued, rejected, failed, cancelled] }
-        submitted_at: { type: string, format: date-time }
+        id: {type: string, format: uuid}
+        requester_id: {type: string, format: uuid}
+        ca_id: {type: string, format: uuid}
+        profile_id: {type: string, format: uuid}
+        key_generation_mode:
+          type: string
+          enum: [client_csr, server_generated]
+        status:
+          type: string
+          enum: [pending, approved, issuing, issued, rejected, failed, cancelled]
+        submitted_at: {type: string, format: date-time}
+        csr_pem: {type: string}
+        requested_subject: {$ref: '#/components/schemas/Subject'}
+        requested_sans:
+          type: [array, 'null']
+          items: {type: string}
+        requested_validity_seconds: {type: integer}
+        rejection_reason: {type: string}
+        error_code: {type: string}
+        approved_at: {type: string, format: date-time}
+        issued_at: {type: string, format: date-time}
     Certificate:
       type: object
       required: [id, issuer_ca_id, serial, fingerprint_sha256, certificate_pem, chain_pem, status]
       properties:
-        id: { type: string, format: uuid }
-        issuer_ca_id: { type: string, format: uuid }
-        owner_user_id: { type: string, format: uuid }
-        serial: { type: string }
-        fingerprint_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
-        certificate_pem: { type: string }
-        chain_pem: { type: string }
-        status: { type: string, enum: [good, revoked] }
+        id: {type: string, format: uuid}
+        issuer_ca_id: {type: string, format: uuid}
+        owner_user_id: {type: string, format: uuid}
+        serial: {type: string}
+        fingerprint_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
+        status:
+          type: string
+          enum: [good, revoked]
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        subject: {$ref: '#/components/schemas/Subject'}
+        sans:
+          type: [array, 'null']
+          items: {type: string}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+      description: Exact/detail response, also used publicly. Includes owner_user_id and nullable request_id business
+        UUIDs.
     CertificateInventoryItem:
       type: object
-      required:
-        [owner_user_id, requester_username, issuer_ca_id, issuer_name, issuer_slug, subject, sans,
-         workflow_status, submitted_at]
+      required: [owner_user_id, requester_username, issuer_ca_id, issuer_name, issuer_slug, subject, sans, workflow_status,
+        submitted_at]
       properties:
-        request_id: { type: string, format: uuid }
-        certificate_id: { type: string, format: uuid }
-        owner_user_id: { type: string, format: uuid }
-        requester_username: { type: string }
-        issuer_ca_id: { type: string, format: uuid }
-        issuer_name: { type: string }
-        issuer_slug: { type: string }
-        subject: { $ref: '#/components/schemas/Subject' }
-        sans: { type: array, items: { type: string } }
-        workflow_status: { type: string, enum: [pending, issued, rejected, failed] }
-        request_status: { type: string, enum: [pending, approved, issuing, issued, rejected, failed, cancelled] }
-        certificate_status: { type: string, enum: [good, revoked] }
-        serial: { type: string }
-        rejection_reason: { type: string }
-        error_code: { type: string }
-        approver_id: { type: string, format: uuid }
-        approver_username: { type: string }
-        submitted_at: { type: string, format: date-time }
-        approved_at: { type: string, format: date-time }
-        issued_at: { type: string, format: date-time }
-        not_before: { type: string, format: date-time }
-        not_after: { type: string, format: date-time }
+        request_id: {type: string, format: uuid}
+        certificate_id: {type: string, format: uuid}
+        owner_user_id: {type: string, format: uuid}
+        requester_username: {type: string}
+        issuer_ca_id: {type: string, format: uuid}
+        issuer_name: {type: string}
+        issuer_slug: {type: string}
+        subject: {$ref: '#/components/schemas/Subject'}
+        sans:
+          type: [array, 'null']
+          items: {type: string}
+        workflow_status:
+          type: string
+          enum: [pending, issued, rejected, failed]
+        request_status:
+          type: string
+          enum: [pending, approved, issuing, issued, rejected, failed, cancelled]
+        certificate_status:
+          type: string
+          enum: [good, revoked]
+        serial: {type: string}
+        rejection_reason: {type: string}
+        error_code: {type: string}
+        approver_id: {type: string, format: uuid}
+        approver_username: {type: string}
+        submitted_at: {type: string, format: date-time}
+        approved_at: {type: string, format: date-time}
+        issued_at: {type: string, format: date-time}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+    SigningProfileInput:
+      type: object
+      required: [name, default_validity_seconds, max_validity_seconds, key_usages]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        description: {type: string}
+        default_validity_seconds: {type: integer, minimum: 1, maximum: 34300800}
+        max_validity_seconds: {type: integer, minimum: 1, maximum: 34300800}
+        key_usages:
+          type: array
+          minItems: 1
+          items: {type: string}
+        extended_key_usages:
+          type: [array, 'null']
+          items: {type: string}
+        allowed_dns_patterns:
+          type: [array, 'null']
+          items: {type: string, description: Go glob pattern}
+          description: Go glob expressions. Empty or null means unrestricted DNS range.
+        allowed_ip_ranges:
+          type: [array, 'null']
+          items: {type: string, description: IPv4 or IPv6 CIDR}
+          description: CIDRs. Empty or null means unrestricted IP range.
+        allow_email_sans: {type: boolean, default: false}
+        allow_uri_sans: {type: boolean, default: false}
+        policy: {description: Any JSON value stored as metadata; null or omitted is allowed.}
+        enabled: {type: boolean, default: false}
+      additionalProperties: false
+      description: Full replacement input. max_validity_seconds >= default_validity_seconds. Empty DNS/IP allow-lists
+        impose no restriction. policy is stored JSON metadata, not an additional validation engine.
+    CertificateSummary:
+      type: object
+      required: [id, issuer_ca_id, serial, certificate_pem, chain_pem, status]
+      properties:
+        id: {type: string, format: uuid}
+        issuer_ca_id: {type: string, format: uuid}
+        owner_user_id: {type: string, format: uuid}
+        serial: {type: string}
+        certificate_pem: {type: string}
+        chain_pem: {type: string}
+        status:
+          type: string
+          enum: [good, revoked]
+        request_id: {type: string, format: uuid}
+        subject: {$ref: '#/components/schemas/Subject'}
+        sans:
+          type: [array, 'null']
+          items: {type: string}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+      description: Certificate list item; fingerprint_sha256 is not serialized in list responses. request_id is
+        omitted when absent.
+    CAGrant:
+      type: object
+      properties:
+        ca_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        permission:
+          type: string
+          enum: [view_requests, approve, issue, revoke]
+        granted_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+      required: [ca_id, user_id, permission, granted_by, created_at]
+    CertificateInfoInput:
+      type: object
+      properties:
+        certificate_pem: {type: string}
+      additionalProperties: false
+      required: [certificate_pem]
+    GenerateCSRInput:
+      type: object
+      properties:
+        subject: {$ref: '#/components/schemas/Subject'}
+        sans:
+          type: [array, 'null']
+          items: {type: string}
+        algorithm:
+          type: string
+          enum: [rsa, ecdsa, '']
+          description: Omit or pass empty string for RSA-3072 regardless of key_size. Explicit RSA requires key_size
+            3072/4096; ECDSA requires 256/384.
+        key_size: {type: integer}
+      additionalProperties: false
+    BundleInput:
+      type: object
+      properties:
+        certificates_pem: {type: string}
+        roots_pem: {type: string}
+        intermediates_pem: {type: string}
+        flavor:
+          type: string
+          enum: [optimal, ubiquitous, force, '']
+          default: optimal
+      additionalProperties: false
+      required: [certificates_pem]
+    Bundle:
+      type: object
+      properties:
+        bundle: {type: string}
+        root: {type: string}
+        crt: {type: string}
+        key: {type: string}
+        key_type: {type: string}
+        issuer: {type: string}
+        subject: {type: string}
+        signature: {type: string}
+        key_size: {type: integer}
+        expires: {type: string, format: date-time}
+        leaf_expires: {type: string, format: date-time}
+        hostnames:
+          type: [array, 'null']
+          items: {type: string}
+        ocsp_support: {type: boolean}
+        crl_support: {type: boolean}
+        ocsp:
+          type: [array, 'null']
+          items: {type: string}
+        status:
+          type: object
+          properties:
+            rebundled: {type: boolean}
+            expiring_SKIs:
+              type: [array, 'null']
+              items: {type: string}
+            untrusted_root_stores:
+              type: [array, 'null']
+              items: {type: string}
+            messages:
+              type: [array, 'null']
+              items: {type: string}
+            code: {type: integer}
+    CertificateInfo:
+      type: object
+      properties:
+        subject: {type: string}
+        issuer: {type: string}
+        serial: {type: string}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
+        dns_names:
+          type: [array, 'null']
+          items: {type: string}
+        email_addresses:
+          type: [array, 'null']
+          items: {type: string}
+        ip_addresses:
+          type: [array, 'null']
+          items: {type: string}
+        uris:
+          type: [array, 'null']
+          items:
+            type: object
+            properties: {}
+            additionalProperties: true
+        is_ca: {type: boolean}
+        fingerprint_sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+    AuditRecord:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        actor_user_id: {type: string, format: uuid}
+        actor_role: {type: string}
+        session_id: {type: string, format: uuid}
+        action: {type: string}
+        resource_type: {type: string}
+        resource_id: {type: string, format: uuid}
+        outcome: {type: string}
+        request_id: {type: string}
+        source_ip: {type: string}
+        user_agent: {type: string}
+        cf_access_sub: {type: string, description: 'Historical Cloudflare identity, absent for new local sessions.'}
+        before_state: {}
+        after_state: {}
+        metadata: {}
+        previous_hash: {type: string}
+        event_hash: {type: string}
+        occurred_at: {type: string, format: date-time}
 security:
   - sessionCookie: []

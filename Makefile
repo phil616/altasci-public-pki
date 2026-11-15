@@ -6,6 +6,7 @@ PKI_CONSOLE_LDFLAGS := "-s -w -X main.version=$(PKI_CONSOLE_VERSION)"
 export GOFLAGS := -mod=vendor
 export GOPROXY := off
 GOVULNCHECK ?= govulncheck
+PYTHON ?= python3
 
 # Preserve the existing RFC 3161 large-OID/parser fixes when updating modules.
 .PHONY: vendor
@@ -17,6 +18,10 @@ vendor:
 pki-console-security:
 	$(GOVULNCHECK) ./cmd/pki-console
 	cd web && npm audit --audit-level=low
+
+.PHONY: pki-console-docs
+pki-console-docs:
+	$(PYTHON) scripts/check_docs.py
 
 .PHONY: all
 all: bin/cfssl bin/cfssl-bundle bin/cfssl-certinfo bin/cfssl-newkey bin/cfssl-scan bin/cfssljson bin/mkbundle bin/multirootca

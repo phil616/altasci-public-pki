@@ -1,5 +1,7 @@
 # 桌面客户端接入
 
+状态：当前指南；核对日期：2026-11-15。
+
 当前版本直接调用管理域名的本地认证 API，无需 Cloudflare Managed OAuth、PKCE 或
 外部浏览器授权。服务端 API 合约见 [openapi.yaml](openapi.yaml)。
 
@@ -11,7 +13,7 @@
 POST /api/v1/auth/login
 Content-Type: application/json
 
-{"login":"alice@example.com","password":"local-password"}
+{"login":"alice@example.com","password":"replace-with-account-password"}
 ```
 
 超级管理员必须额外提供 `totp`，使用 SHA-256、6 位、30 秒的动态验证码。
@@ -40,13 +42,22 @@ X-CSRF-Token: <csrf-token>
 401 表示登录、会话或 CSRF 校验失败，需要重新建立会话；403 表示权限不足或敏感操作
 二次验证失败。429 按 `Retry-After` 等待后重试。所有响应都应正确处理非 JSON 网络错误。
 
+普通会话空闲 8 小时、绝对 24 小时；超级管理员空闲 30 分钟、绝对 4 小时。
+`/auth/session` 只返回用户信息，不补发 CSRF token。账户禁用或密码变更也会使会话失效。
+根账户的敏感导出二次验证失败或每分钟 5 次限额用尽返回 403；不要将全部 403 当作可立即重试。
+服务端 503 可能表示审计不可用，操作未进入业务处理。
+
 ## 幂等、下载与公开接口
 
-需要重试的关键写操作使用 8–128 字符的 `Idempotency-Key`。同一次操作重试保持原 key
-和内容；不同内容使用新 key。响应中的 `Idempotency-Replayed` 表示是否复用了结果。
+仅对 OpenAPI 标明支持的写操作，可选使用 8–128 字节的 `Idempotency-Key`。
+同一次操作重试保持原 key
+和内容；不同内容使用新 key。服务端保存结果 24 小时，不缓存 5xx，
+同 key 内容不同返回 409；重放仍需会话和 CSRF 验证，但不重新执行业务处理函数。
+响应中的 `Idempotency-Replayed` 表示是否复用了结果。
 
-CA 私钥导出仍要求在 JSON 中提供新密码和 TOTP；服务器生成的叶私钥仍为一次性下载，
-成功下载后不能重新获取。
+CA 私钥导出要求在 JSON 中重新输入当前密码及未使用的 TOTP，不是设置新密码。
+服务器生成的叶私钥只供申请者在 24 小时内一次性领取；服务端在发送响应前提交擦除，
+网络中断或保存失败也可能无法重取。该接口和 CA 私钥导出不支持幂等重放。
 
 公开域名上的 `/pki/v1/*`、`/issuers/*`、`/crl/*`、`/ocsp/*`、`/tsa/*` 不需要本地会话。
 公开域名不提供管理 API；两个 origin 不能互换。

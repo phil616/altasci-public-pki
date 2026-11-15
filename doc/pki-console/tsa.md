@@ -1,5 +1,7 @@
 # RFC 3161 Time-Stamping Authority
 
+Status: current guide. Verified against source on 2026-11-15.
+
 PKI-Console implements RFC 3161 with the RFC 5816 `SigningCertificateV2`
 profile. It is intended for reliable internal and public timestamping without
 qualified-TSP, national commercial-cryptography, or HSM certification claims.
@@ -10,10 +12,10 @@ Run `pki-console migrate` before deploying the TSA-enabled binary. Sign in as
 the super administrator, open an active intermediate CA, select **时间戳服务**,
 and create a signing unit with:
 
-- a stable lowercase slug, used by `/tsa/{slug}`;
+- a stable 2–63 character slug containing lowercase letters, digits or hyphens, used by `/tsa/{slug}`;
 - a display name;
 - an OID from an object-identifier branch controlled by the organization;
-- a certificate lifetime between one day and three years.
+- a certificate lifetime between one day and 3×365 days, clipped to the CA chain lifetime.
 
 Each TSU receives a separate RSA-3072 private key. The key is encrypted with
 the active PKI master key and stored separately from CA and OCSP keys. The
@@ -23,15 +25,18 @@ containing only `id-kp-timeStamping`.
 The public endpoint is:
 
 ```text
-POST https://pki.altasci.com/tsa/{slug}
+POST https://pki.example.com/tsa/{slug}
 Content-Type: application/timestamp-query
 Accept: application/timestamp-reply
 ```
 
 Requests are limited to 64 KiB. Supported message-imprint algorithms are
 SHA-256, SHA-384, and SHA-512. SHA-1, unknown policies, malformed digest
-lengths, and unsupported extensions receive a DER RFC 3161 rejection rather
-than a JSON application error.
+lengths, and unsupported extensions receive a DER RFC 3161 rejection with HTTP 200.
+HTTP-level failures are separate: 400 for body read errors, 413 above 64 KiB,
+415 for the wrong Content-Type, and 429 for rate or concurrency limits. These
+use application/problem+json. A proxy may produce its own error response.
+Clients must check HTTP status and parse the DER response status, including on HTTP 200.
 
 ## OpenSSL interoperability check
 
@@ -42,7 +47,7 @@ curl --fail --silent --show-error \
   -H 'Content-Type: application/timestamp-query' \
   -H 'Accept: application/timestamp-reply' \
   --data-binary @request.tsq \
-  https://pki.altasci.com/tsa/release-tsa \
+  https://pki.example.com/tsa/release-tsa \
   --output response.tsr
 
 openssl ts -reply -in response.tsr -text
@@ -62,14 +67,16 @@ OpenSSL is copied into the response.
 A granted response is returned only after its serial, message imprint, policy,
 nonce, generation time, accuracy, token digest, and complete DER response have
 been committed to PostgreSQL. A unique database constraint prevents serial
-reuse across concurrent instances, restarts, and restores. Repeated identical
+reuse within the shared database across concurrent instances and restarts.
+Restoring an older snapshot loses later token records; unique constraints do
+not coordinate separate restored copies. Prevent concurrent issuance from divergent databases. Repeated identical
 requests intentionally receive different serials and tokens and must not be
 cached or deduplicated.
 
-Production uses Linux `adjtimex(2)` to inspect kernel NTP state. Issuance fails
+Production TSA requires Linux and uses `adjtimex(2)` to inspect kernel NTP state. Issuance fails
 closed with RFC 3161 `timeNotAvailable` when the kernel reports `TIME_ERROR`,
 `STA_UNSYNC`, `STA_CLOCKERR`, or uncertainty greater than
-`TSA_MAX_CLOCK_UNCERTAINTY` (default `5s`). Keep chrony or systemd-timesyncd
+`TSA_MAX_CLOCK_UNCERTAINTY` (default `5s`, configurable from `1ms` to `1m`). Keep chrony or systemd-timesyncd
 enabled and monitor both clock synchronization and timestamp rejection logs.
 The supplied systemd unit leaves `ProtectClock=false` solely so this read-only
 query is possible; its empty capability bounding set with no `CAP_SYS_TIME`
@@ -81,13 +88,18 @@ chronyc tracking
 chronyc sources -v
 ```
 
-Do not use Cloudflare Worker time as the trusted timestamp. Pages Functions,
-WAF, rate limiting, and Tunnel only transport the DER request and response.
-The origin applies an additional per-client rate limit and always sends
-`Cache-Control: no-store`.
+Nginx transports the DER requests and responses to the same Go application.
+The application limits TSA traffic to 120 requests per client IP per minute
+and shares four concurrent cryptographic-operation slots with other protected
+operations. These limits are per process. DER replies use `Cache-Control: no-store`.
+Non-Linux production runtimes reject issuance as time unavailable. The insecure
+development mode bypasses kernel health checks and must not be used in production.
 
 Database or key-decryption failures return a valid RFC 3161 `systemFailure`
 response. An expired, inactive, or invalid TSU never signs. Monitor certificate
 expiry and provision a replacement TSU before the current certificate expires;
 retain old TSU certificates and token records so previously issued timestamps
 remain verifiable.
+
+The API currently provides TSU creation and listing, not in-place renewal or lifecycle
+status updates. Operational guidance: [operations-runbook.md](operations-runbook.md).

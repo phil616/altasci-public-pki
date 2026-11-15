@@ -1,131 +1,54 @@
-> 历史文档：本文中的 Cloudflare / Pages / Access / Tunnel 部署步骤适用于旧版本。
-> 当前单体应用使用本地密码/TOTP、外部 PostgreSQL 和 Nginx，部署与迁移以
-> [production-deployment.md](production-deployment.md) 为准；Web 业务流程与数据库操作请结合当前版本核对。
+# 运维记录模板
 
-# PKI-Console 运维记录模板
+状态：当前模板；核对日期：2026-11-15。记录填写实际时间、环境、操作者与结果。
+不要填写密码、TOTP secret、KEK、Cookie、CSRF、含口令数据库 URL 或私钥。
+旧模板见 [归档](archive/cloudflare-2026/README.md)。
 
-以下模板用于受控工单、值班系统或内部知识库。它们可以复制使用，但不要把动态运行记录
-和敏感值提交到 Git。密码、TOTP、JWT、Cookie、数据库 URL、origin secret、Tunnel
-Token、私钥和 KEK 只能记录其保管位置或版本 ID，不能记录内容。
-
-## 日常巡检记录
+## 发布或配置变更
 
 ```text
-日期/时区：
-值班人：
-
-[ ] pki.altasci.com 首页、live、authorities 正常
-[ ] pki-origin.altasci.com 匿名请求为 403
-[ ] pki-console.altasci.com 进入 Access
-[ ] pki-console.service active + enabled
-[ ] cloudflared.service active + enabled
-[ ] PostgreSQL 容器运行，应用 healthcheck 通过
-[ ] 最近 24h 无未处理 ERROR/WARN/panic/audit write failure
-[ ] issuance_jobs 无超时 running/积压 queued/failed
-[ ] CA、CRL、OCSP 无临近到期告警
-[ ] 最近一次数据库备份成功且大小合理
-[ ] 磁盘、内存、时间同步和数据库连接正常
-
-异常与工单：
-交接事项：
+变更编号 / 时间与时区 / 操作者 / 复核者：
+环境 / 主机 / 两个域名 / 维护窗口：
+目标与影响：
+新旧版本、提交、二进制 SHA-256：
+工具链版本 / 检查结果 / 实际执行或跳过的测试：
+PostgreSQL 版本 / 迁移前后版本：
+Nginx、systemd 和非敏感配置差异：
+备份编号 / KEK 托管记录编号 / 恢复验证：
+本机 live、ready / 外部 HTTPS 验证：
+登录、权限、签发、CRL、OCSP、TSA 验收：
+错误率、延迟、队列与到期监控：
+回滚条件、步骤与数据兼容性：
+结果 / 遗留事项 / 负责人：
 ```
 
-## 生产变更记录
+## 备份与恢复演练
 
 ```text
-变更编号：
-申请人/执行人/批准人：
-计划时间/实际时间/时区：
-变更原因：
-关联 issue/commit/tag：
-影响域名/服务/CA：
-
-变更前状态：
-- 当前 binary version/SHA-256：
-- 当前 Pages deployment：
-- 数据库 migration version：
-- 最近备份/PITR 点：
-- public/origin/Console 基线结果：
-
-实施步骤：
-验证步骤：
-回滚触发条件：
-回滚步骤：
-
-实际结果：
-健康检查结果：
-真实 Console 登录结果：
-观察窗口与日志结论：
-遗留事项：
+时间与时区 / 环境 / 操作者：
+备份编号、时间范围、校验和：
+数据库和客户端版本 / 分区、函数、权限覆盖情况：
+对应 KEK 托管记录编号（不填写密钥）：
+隔离目标 / 恢复日志 / 二进制与迁移结果：
+登录、解密、签发、吊销、TSA、审计验收：
+恢复耗时 / 可接受数据丢失窗口：
+演练库与临时敏感文件清理结果：
+问题 / 整改负责人 / 期限：
 ```
 
-## 备份与恢复演练记录
+## 故障记录
 
 ```text
-演练编号/日期：
-执行人/复核人：
-隔离环境：
-目标恢复时间点：
-数据库备份 ID/校验和：
-WAL 范围：
-应用 tag/binary SHA-256：
-KEK key IDs（不写值）：
-
-恢复开始/结束时间：
-实际 RPO：
-实际 RTO：
-表数量与审计分区检查：
-CA envelope 解密检查：
-申请/审批/签发/下载/吊销/CRL/OCSP 结果：
-隔离环境销毁确认：
-
-失败点与人工步骤：
-改进工单：
-批准人：
+故障编号 / 开始、发现、缓解、恢复时间与时区：
+影响域名、接口、账户范围与持续时间：
+版本 / 最近变更：
+脱敏 request_id / 错误码 / 日志位置：
+数据库、审计分区、队列、NTP、证书到期检查：
+根因与证据 / 尚未证实假设：
+处置步骤 / 是否影响签发与吊销数据：
+恢复验证 / 遗留风险 / 后续行动与负责人：
+关联工单与审计记录：
 ```
 
-## 凭据或密钥轮换记录
-
-```text
-轮换编号/对象：
-原因：例行 / 人员变更 / 疑似泄漏 / 算法策略 / Access 应用重建
-执行人/见证人/批准人：
-维护窗口：
-旧版本 ID（不写值）：
-新版本 ID（不写值）：
-安全副本位置：
-
-依赖方更新顺序：
-服务重启/Pages deployment：
-public 200 / origin 403 / ready：
-真实 root 登录：
-CA envelope 恢复验证：
-旧材料销毁时间与见证人：
-异常与后续事项：
-```
-
-## 安全或可用性事件记录
-
-```text
-事件编号/等级：P0 / P1 / P2 / P3
-发现时间/恢复时间/关闭时间/时区：
-发现人/指挥人/参与人：
-影响域名、CA、用户和时间窗：
-当前是否冻结签发：
-
-症状：
-第一条可靠证据：
-request_id / audit event ID / backup ID（不得粘贴凭据）：
-时间线：
-根因：
-处置：
-数据或密钥影响：
-公开 PKI 影响：
-恢复验证：
-证据保全位置：
-对外/内部通知：
-防复发行动、负责人和截止时间：
-批准关闭人：
-```
-
-具体检查命令、阈值和处置步骤见 [operations-runbook.md](operations-runbook.md)。
+操作见 [运维指南](operations-runbook.md)和 [备份与迁移](deployment-migration-export.md)。
+记录作为带日期的事实快照保存，不把某次通过结果视为长期结论。

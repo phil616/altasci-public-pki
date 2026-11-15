@@ -1,5 +1,7 @@
 # 单机部署：单体程序 + Nginx + PostgreSQL
 
+状态：当前指南；核对日期：2026-11-15。示例域名和路径需按实际环境替换。
+
 当前部署只运行一个 `pki-console` 程序，前端、API、认证和签发任务都在其中。
 外部 PostgreSQL 18+ 提供存储，Nginx 终止 HTTPS 并反代同机回环端口。
 不再配置 Cloudflare Pages、Functions、Access、Tunnel 或 origin 共享密钥。
@@ -10,6 +12,7 @@
 `pki.example.com`，以及相应的 HTTPS 证书。继续使用原有发布域名可保持已有证书中的
 AIA、CRL、OCSP 地址可用。应用端口无需对外开放。
 
+生产主机使用 Linux，TSA 的内核时钟健康检查仅在 Linux 实现。
 数据库要求 PostgreSQL 18+（当前 schema 使用 `uuidv7()`），编码使用 UTF-8。
 使用现有平台创建数据库和独立角色，让该角色拥有应用 schema 的建表、函数与分区权限。
 当前审计写入会创建月分区；备份和恢复应包含这些对象。
@@ -132,8 +135,8 @@ CA 列表和普通账户权限；到公开域名检查 CA、证书精确查询�
    PKI 路由；保留旧环境与部署记录供回滚。上述外部资源变更由运维按实际环境执行。
 
 现有账户、CA、证书、加密私钥、审批、任务与审计均沿用；历史审计的 `cf_access_sub`
-字段保留，新登录不再写入 Cloudflare 身份。已有会话继续按原有过期与撤销规则工作；
-可在切换时让客户端退出后重新登录验证新链路。桌面程序移除 Cloudflare OAuth 流程，直接
+字段保留，新登录不再写入 Cloudflare 身份。已有会话可用性受密码同步、过期和撤销影响；
+切换后重新登录验证新链路。桌面程序移除 Cloudflare OAuth 流程，直接
 执行本地登录，参见 [desktop-client-integration.md](desktop-client-integration.md)。
 
 回滚时恢复旧二进制、旧代理/DNS 路由和完整旧环境（含 Access 与共享密钥配置）。
@@ -159,3 +162,6 @@ sudo journalctl -u pki-console -n 100 --no-pager
 | 页面脚本加载失败 | 是否用 `make pki-console` 重新构建并部署完整二进制 |
 | 无法解密密钥 | 旧 KEK 是否完整保留，active ID 是否有效 |
 | TSA 拒绝签发 | 系统 NTP 状态与内核时钟不确定度 |
+
+日常运维见 [operations-runbook.md](operations-runbook.md)，备份、隔离恢复和导出见
+[deployment-migration-export.md](deployment-migration-export.md)。
