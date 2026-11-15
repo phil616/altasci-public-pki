@@ -46,8 +46,11 @@ paths:
       description: |
         Establishes a local session. Super administrators must also supply a fresh SHA-256 TOTP code.
         After a correct root password, an absent TOTP returns 401 second_factor_required without
-        increasing the account failure counter. Wrong passwords or invalid/replayed codes return
+        increasing the account failure counter. Wrong passwords or invalid codes return
         401 invalid_credentials and count towards account lockout; IP rate limits apply to all attempts.
+        After password verification, 401 account_locked includes Retry-After; 401 totp_replayed
+        identifies a used code. A valid current code blocked by a future replay counter returns
+        503 totp_clock_behind without incrementing credential failures. Wrong passwords do not reveal lock status.
       security: []
       requestBody:
         required: true

@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +81,19 @@ func TestPostgresRootAuthenticationLifecycle(t *testing.T) {
 		if _, err := s.Login(ctx, LoginInput{Login: cfg.RootUserEmail, Password: cfg.RootUserPassword,
 			TOTP: loginTestCode(cfg.RootUserTOTPSecret, time.Now())}); err != nil {
 			t.Fatalf("correct rotated credentials remain locked: %v", err)
+		}
+	})
+	t.Run("expired lock starts a new failure window", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `UPDATE users SET status='locked',failed_login_count=5,
+            locked_until=now()-interval '1 second' WHERE id=$1`, root.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Login(ctx, LoginInput{Login: cfg.RootUserEmail, Password: "wrong"}); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("wrong password was not rejected: %v", err)
+		}
+		user, err := data.RootUser(ctx)
+		if err != nil || user.FailedLoginCount != 1 || user.LockedUntil != nil || user.Status != "active" {
+			t.Fatalf("first failure after lock expiry immediately relocked account: count=%d status=%s err=%v", user.FailedLoginCount, user.Status, err)
 		}
 	})
 	t.Run("unchanged restart preserves replay state and lock", func(t *testing.T) {
@@ -181,6 +196,41 @@ func TestPostgresRootAuthenticationLifecycle(t *testing.T) {
 		}
 		if _, err := data.UserByLogin(ctx, alias); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("ambiguous login selected an arbitrary account: %v", err)
+		}
+	})
+	t.Run("read-only checks identify future replay state", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `UPDATE users SET root_totp_last_step=$2,failed_login_count=0,
+            locked_until=NULL,status='active' WHERE id=$1`, root.ID, time.Now().Unix()/30+100); err != nil {
+			t.Fatal(err)
+		}
+		before, err := data.RootUser(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := loginTestCode(cfg.RootUserTOTPSecret, time.Now())
+		if _, err := s.Login(ctx, LoginInput{Login: cfg.RootUserEmail, Password: cfg.RootUserPassword, TOTP: code}); !errors.Is(err, security.ErrTOTPClockBehind) {
+			t.Fatalf("valid code rejected for future state was not identified: %v", err)
+		}
+		for i := 0; i < 2; i++ {
+			report, err := s.CheckRoot(ctx, code)
+			if err != nil || !report.PasswordMatches || !report.TOTPSecretMatches || !report.EmailMatches || !report.TOTPStateAhead || report.TOTPCodeStatus != "clock_behind" {
+				t.Fatalf("root-state diagnostic missed the cause: %v", err)
+			}
+			encoded, _ := json.Marshal(report)
+			if strings.Contains(string(encoded), cfg.RootUserPassword) || strings.Contains(string(encoded), before.PasswordHash) || strings.Contains(string(encoded), `"`+code+`"`) {
+				t.Fatal("diagnostic output contains a credential")
+			}
+		}
+		after, err := data.RootUser(ctx)
+		if err != nil || before.TOTPLastStep != after.TOTPLastStep || after.FailedLoginCount != 0 || after.LockedUntil != nil || !before.UpdatedAt.Equal(after.UpdatedAt) {
+			t.Fatal("diagnostics or a valid code blocked by clock state changed the account")
+		}
+		mismatched := cfg
+		mismatched.RootUserPassword = "different-environment-password-at-least-32-characters"
+		mismatched.RootUserTOTPSecret = bytes.Repeat([]byte{47}, 32)
+		report, err := newService(mismatched).CheckRoot(ctx, "")
+		if err != nil || report.PasswordMatches || report.TOTPSecretMatches {
+			t.Fatal("a stale process environment was not detected")
 		}
 	})
 }

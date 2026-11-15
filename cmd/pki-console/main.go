@@ -38,15 +38,18 @@ func run(logger *slog.Logger) error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
-	if command != "serve" && command != "worker" && command != "migrate" && command != "healthcheck" {
-		return fmt.Errorf("usage: pki-console [serve|worker|migrate|healthcheck]")
+	if command != "serve" && command != "worker" && command != "migrate" && command != "healthcheck" && command != "auth-check" {
+		return fmt.Errorf("usage: pki-console [serve|worker|migrate|healthcheck|auth-check]")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if command == "auth-check" {
+		return runAuthCheck(ctx, os.Args[2:], os.Stdin, os.Stdout)
 	}
 	cfg, err := consoleconfig.Load()
 	if err != nil {
 		return fmt.Errorf("load configuration: %w", err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	if command == "healthcheck" {
 		return healthcheck(ctx, cfg)
 	}
@@ -59,15 +62,18 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 	data := store.New(pool)
-	authService, err := auth.NewService(data, cfg)
-	if err != nil {
-		return err
+	var authService *auth.Service
+	if command == "serve" {
+		authService, err = auth.NewService(data, cfg)
+		if err != nil {
+			return err
+		}
+		root, err := authService.BootstrapRoot(ctx)
+		if err != nil {
+			return fmt.Errorf("bootstrap root account: %w", err)
+		}
+		logger.Info("root account synchronized", "user_id", root.ID, "email", cfg.RootUserEmail)
 	}
-	root, err := authService.BootstrapRoot(ctx)
-	if err != nil {
-		return fmt.Errorf("bootstrap root account: %w", err)
-	}
-	logger.Info("root account synchronized", "user_id", root.ID, "email", cfg.RootUserEmail)
 	pkiService, err := pki.NewService(data, security.Keyring{ActiveID: cfg.MasterKeyActiveID, Keys: cfg.MasterKeys}, cfg.PublicBaseURL.String())
 	if err != nil {
 		return err

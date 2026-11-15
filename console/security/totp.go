@@ -9,7 +9,13 @@ import (
 	"time"
 )
 
-const totpPeriod = int64(30)
+// TOTPPeriod is the shared RFC 6238 time step in seconds.
+const TOTPPeriod = int64(30)
+const totpPeriod = TOTPPeriod
+
+var ErrTOTPInvalid = errors.New("invalid TOTP code")
+var ErrTOTPReplayed = errors.New("TOTP code has already been used")
+var ErrTOTPClockBehind = errors.New("current TOTP code is valid but the stored replay counter is ahead of the server clock")
 
 // VerifyTOTP validates a six-digit RFC 6238 HMAC-SHA-256 code. It returns the
 // accepted counter so the caller can reject reuse transactionally.
@@ -26,16 +32,24 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastAccepted int64) (
 		}
 	}
 	counter := now.Unix() / totpPeriod
+	matchedUsed := false
 	for offset := int64(-1); offset <= 1; offset++ {
 		candidate := counter + offset
-		if candidate <= lastAccepted {
-			continue
-		}
 		if hmac.Equal([]byte(code), []byte(totpCode(secret, candidate))) {
+			if candidate <= lastAccepted {
+				matchedUsed = true
+				continue
+			}
 			return candidate, nil
 		}
 	}
-	return 0, errors.New("invalid or replayed TOTP code")
+	if matchedUsed {
+		if lastAccepted > counter+1 {
+			return 0, ErrTOTPClockBehind
+		}
+		return 0, ErrTOTPReplayed
+	}
+	return 0, ErrTOTPInvalid
 }
 
 func totpCode(secret []byte, counter int64) string {

@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -30,8 +31,14 @@ func TestTOTPReplayProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := VerifyTOTP(secret, code, now, step); err == nil {
-		t.Fatal("expected replay to be rejected")
+	if _, err := VerifyTOTP(secret, code, now, step); !errors.Is(err, ErrTOTPReplayed) {
+		t.Fatalf("expected a replay classification, got %v", err)
+	}
+	if _, err := VerifyTOTP(secret, code, now, step+100); !errors.Is(err, ErrTOTPClockBehind) {
+		t.Fatalf("valid current code blocked by future state was not identified: %v", err)
+	}
+	if _, err := VerifyTOTP(secret, "abcdef", now, step+100); errors.Is(err, ErrTOTPClockBehind) {
+		t.Fatal("invalid code disclosed a valid-code diagnostic")
 	}
 }
 

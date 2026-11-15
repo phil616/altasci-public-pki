@@ -72,6 +72,8 @@ sudo systemctl status pki-console --no-pager
 
 迁移是独立命令，不在 `serve` 启动时自动执行。`serve` 自带签发 worker，无需另外安装
 worker 服务。TSA 继续要求 Linux 系统时间同步；生产模式下 NTP 未同步或误差过大会拒绝签发时间戳。
+额外的 `worker` 进程不再同步 root 凭据，避免其环境覆盖管理服务的身份配置。
+登录故障优先按 [认证诊断](authentication-diagnostics.md) 检查运行进程的实际环境及重放/锁定状态。
 
 ## 4. Nginx
 

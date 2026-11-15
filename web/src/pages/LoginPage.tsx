@@ -29,6 +29,9 @@ export function LoginPage() {
       const messages: Record<string, string> = {
         invalid_credentials: '账户、密码或动态验证码不正确，或账户仍处于锁定期。超级管理员请使用 SHA-256、6 位、30 秒的未使用验证码。',
         second_factor_required: '密码校验已通过，请填写超级管理员动态验证码：SHA-256、6 位、30 秒。',
+        account_locked: '密码正确，但账户仍在锁定期。请停止重试，等待锁定到期后再使用新验证码。',
+        totp_replayed: '这个动态验证码已经使用过，请等待验证器生成新验证码后再试。',
+        totp_clock_behind: '当前验证码正确，但服务器保存的验证码时间步位于未来。请联系管理员检查服务器时钟和认证状态。',
         authentication_unavailable: '认证服务暂时不可用，请稍后重试，并通过请求编号检查服务端日志。',
         origin_not_allowed: '访问地址与服务端配置的管理地址不一致，请使用正确的管理域名。',
         rate_limited: '登录尝试过于频繁，请稍后重试。',

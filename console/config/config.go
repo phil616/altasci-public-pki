@@ -51,32 +51,42 @@ type Config struct {
 // Load reads configuration from environment variables and fails closed when a
 // security-sensitive setting is absent or malformed.
 func Load() (Config, error) {
+	return load(os.Getenv)
+}
+
+// LoadFromEnvironment applies the exact startup parser to a captured process
+// environment without changing this process's environment or printing secrets.
+func LoadFromEnvironment(values map[string]string) (Config, error) {
+	return load(func(name string) string { return values[name] })
+}
+
+func load(getenv func(string) string) (Config, error) {
 	var err error
 	c := Config{
-		ListenAddress:          envDefault("PKI_LISTEN_ADDRESS", defaultListenAddress),
-		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		RootUserEmail:          strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_USER_EMAIL"))),
-		RootUserPassword:       os.Getenv("ROOT_USER_PASSWORD"),
-		MasterKeyActiveID:      strings.TrimSpace(os.Getenv("PKI_MASTER_KEY_ACTIVE_ID")),
+		ListenAddress:          envDefault(getenv("PKI_LISTEN_ADDRESS"), defaultListenAddress),
+		DatabaseURL:            strings.TrimSpace(getenv("DATABASE_URL")),
+		RootUserEmail:          strings.ToLower(strings.TrimSpace(getenv("ROOT_USER_EMAIL"))),
+		RootUserPassword:       getenv("ROOT_USER_PASSWORD"),
+		MasterKeyActiveID:      strings.TrimSpace(getenv("PKI_MASTER_KEY_ACTIVE_ID")),
 		SessionIdle:            defaultSessionIdle,
 		SessionMax:             defaultSessionMax,
 		RootSessionIdle:        defaultRootIdle,
 		RootSessionMax:         defaultRootMax,
-		TrustedProxyCIDRs:      splitCSV(os.Getenv("TRUSTED_PROXY_CIDRS")),
+		TrustedProxyCIDRs:      splitCSV(getenv("TRUSTED_PROXY_CIDRS")),
 		TSAMaxClockUncertainty: defaultTSAMaxClockUncertainty,
-		DevelopmentInsecure:    strings.EqualFold(os.Getenv("PKI_DEVELOPMENT_INSECURE"), "true"),
+		DevelopmentInsecure:    strings.EqualFold(getenv("PKI_DEVELOPMENT_INSECURE"), "true"),
 	}
-	if raw := strings.TrimSpace(os.Getenv("TSA_MAX_CLOCK_UNCERTAINTY")); raw != "" {
+	if raw := strings.TrimSpace(getenv("TSA_MAX_CLOCK_UNCERTAINTY")); raw != "" {
 		c.TSAMaxClockUncertainty, err = time.ParseDuration(raw)
 		if err != nil {
 			return Config{}, fmt.Errorf("TSA_MAX_CLOCK_UNCERTAINTY must be a duration: %w", err)
 		}
 	}
 
-	if c.PublicBaseURL, err = parseHTTPSURL("PUBLIC_BASE_URL", os.Getenv("PUBLIC_BASE_URL"), c.DevelopmentInsecure); err != nil {
+	if c.PublicBaseURL, err = parseHTTPSURL("PUBLIC_BASE_URL", getenv("PUBLIC_BASE_URL"), c.DevelopmentInsecure); err != nil {
 		return Config{}, err
 	}
-	if c.ConsoleBaseURL, err = parseHTTPSURL("CONSOLE_BASE_URL", os.Getenv("CONSOLE_BASE_URL"), c.DevelopmentInsecure); err != nil {
+	if c.ConsoleBaseURL, err = parseHTTPSURL("CONSOLE_BASE_URL", getenv("CONSOLE_BASE_URL"), c.DevelopmentInsecure); err != nil {
 		return Config{}, err
 	}
 	if c.PublicBaseURL != nil {
@@ -86,7 +96,7 @@ func Load() (Config, error) {
 		c.ConsoleHostname = c.ConsoleBaseURL.Hostname()
 	}
 
-	secret := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(os.Getenv("ROOT_USER_TOTP_SECRET")), " ", ""))
+	secret := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(getenv("ROOT_USER_TOTP_SECRET")), " ", ""))
 	if secret != "" {
 		c.RootUserTOTPSecret, err = base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
 		if err != nil {
@@ -94,7 +104,7 @@ func Load() (Config, error) {
 		}
 	}
 
-	if c.MasterKeys, err = parseMasterKeys(os.Getenv("PKI_MASTER_KEYS")); err != nil {
+	if c.MasterKeys, err = parseMasterKeys(getenv("PKI_MASTER_KEYS")); err != nil {
 		return Config{}, err
 	}
 	return c, c.Validate()
@@ -235,8 +245,8 @@ func parseHTTPSURL(name, raw string, allowHTTP bool) (*url.URL, error) {
 	return u, nil
 }
 
-func envDefault(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+func envDefault(raw, fallback string) string {
+	if value := strings.TrimSpace(raw); value != "" {
 		return value
 	}
 	return fallback

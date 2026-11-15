@@ -20,6 +20,8 @@ Content-Type: application/json
 已成功使用的验证码不能重放，也不能再次用于私钥导出。
 密码正确但未提供 TOTP 时返回 401 `second_factor_required`，客户端应提示补充验证码；
 该情况不累计账户失败次数，IP 限流仍生效。错误密码、无效或重放的验证码继续累计失败次数。
+401 `account_locked` 在密码验证后提示账户锁定，按 `Retry-After` 等待；401 `totp_replayed`
+表示应等待新验证码。503 `totp_clock_behind` 表示代码正确但旧时间步位于未来，应联系管理员诊断。
 
 成功返回用户信息、`csrf_token`、`expires_at`，并设置
 `__Host-pki_session`（Secure、HttpOnly、SameSite=Strict、Path=/，无 Domain）。

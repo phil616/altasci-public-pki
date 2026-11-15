@@ -29,7 +29,8 @@ Nginx 示例见 [nginx.conf.example](nginx.conf.example)，systemd 单元见
 | --- | --- |
 | 业务配置、授权与签发 | [业务指南](enterprise-pki-web-setup.md) |
 | 日常运维与故障排查 | [运维指南](operations-runbook.md) |
-| 本地认证检查与登录故障修复记录 | [认证检查快照](authentication-review-2026-11-15.md) |
+| 进程环境、TOTP 与锁定诊断 | [认证诊断](authentication-diagnostics.md) |
+| 本地认证检查与登录故障修复记录 | [首次检查](authentication-review-2026-11-15.md)、[二次检查](authentication-recheck-2026-11-15.md) |
 | 备份、恢复、迁移与导出 | [数据维护](deployment-migration-export.md) |
 | 独立 CA、凭据授权与 CSR 自动签发 | [独立签发策略及接入](independent-signing.md) |
 | 时间戳服务 | [TSA](tsa.md) |
@@ -58,7 +59,8 @@ set +a
 
 `make pki-console` 先构建前端，再将资源编入 `bin/pki-console`（`CGO_ENABLED=0`）。
 迁移是显式部署步骤。`serve` 同时启动签发任务，无需第二个进程。
-原有 `worker` 子命令仍可供额外扩容使用，`healthcheck` 检查当前本机服务。
+原有 `worker` 子命令仍可供额外扩容使用，但不初始化或覆盖 root 凭据。
+`healthcheck` 检查当前本机服务，`auth-check` 只读检查配置、账户和 TOTP 状态。
 
 同一个监听端口继续区分两个域名：`CONSOLE_BASE_URL` 提供管理页面和 `/api/v1/*`，
 `PUBLIC_BASE_URL` 提供公开页面及证书、CRL、OCSP、TSA 发布接口。两者必须使用不同

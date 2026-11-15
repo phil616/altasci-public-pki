@@ -152,7 +152,7 @@ def check_routes(document, source):
 
 def check_environment():
     source = (ROOT / "console/config/config.go").read_text()
-    expected = set(re.findall(r'(?:os\.Getenv|envDefault)\("([A-Z][A-Z0-9_]+)"', source))
+    expected = set(re.findall(r'(?:os\.Getenv|getenv|envDefault)\("([A-Z][A-Z0-9_]+)"', source))
     example = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", (ROOT / ".env.example").read_text(), re.M))
     table = set(re.findall(r"^\| `([A-Z][A-Z0-9_]+)` \|", (DOCS / "README.md").read_text(), re.M))
     require(expected and expected == example == table,

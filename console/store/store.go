@@ -135,10 +135,13 @@ func (s *Store) CreateUser(ctx context.Context, username string, email *string, 
 
 func (s *Store) RecordLoginFailure(ctx context.Context, userID string, now time.Time) error {
 	_, err := s.pool.Exec(ctx, `UPDATE users SET
-        failed_login_count=failed_login_count+1,
-        locked_until=CASE WHEN failed_login_count+1 >= 5 THEN $2::timestamptz + interval '15 minutes' ELSE locked_until END,
-        status=CASE WHEN failed_login_count+1 >= 5 THEN 'locked' ELSE status END,
-        updated_at=$2 WHERE id=$1 AND status<>'disabled'`, userID, now)
+        failed_login_count=CASE WHEN locked_until<=$2 THEN 1 ELSE failed_login_count+1 END,
+        locked_until=CASE WHEN locked_until<=$2 THEN NULL
+          WHEN failed_login_count+1 >= 5 THEN $2::timestamptz + interval '15 minutes' ELSE locked_until END,
+        status=CASE WHEN locked_until<=$2 THEN 'active'
+          WHEN failed_login_count+1 >= 5 THEN 'locked' ELSE status END,
+        updated_at=$2 WHERE id=$1 AND status<>'disabled'
+          AND (locked_until IS NULL OR locked_until<=$2)`, userID, now)
 	return err
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,9 +37,23 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusUnauthorized, "second_factor_required", "Super administrator login requires a fresh TOTP code (SHA-256, 6 digits, 30 seconds)")
 			return
 		}
-		s.logger.Warn("login denied", "request_id", requestID(r), "error", err,
+		s.logger.Warn("login denied", "request_id", requestID(r), "stage", auth.FailureStage(err), "error", err,
 			"login_matches_root", strings.EqualFold(strings.TrimSpace(input.Login), s.config.RootUserEmail))
 		_ = s.auditLogin(r, nil, "denied")
+		var locked *auth.AccountLockedError
+		switch {
+		case errors.As(err, &locked):
+			retry := max(1, int(time.Until(locked.Until).Seconds())+1)
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			problem(w, http.StatusUnauthorized, "account_locked", "Password verified, but the account is temporarily locked; wait for Retry-After before retrying")
+			return
+		case errors.Is(err, security.ErrTOTPClockBehind):
+			problem(w, http.StatusServiceUnavailable, "totp_clock_behind", "Current code verified, but stored TOTP state is ahead of the server clock; an administrator must check the clock and replay state")
+			return
+		case errors.Is(err, security.ErrTOTPReplayed):
+			problem(w, http.StatusUnauthorized, "totp_replayed", "This TOTP code has already been used; wait for a new code before retrying")
+			return
+		}
 		if !errors.Is(err, auth.ErrInvalidCredentials) {
 			problem(w, http.StatusServiceUnavailable, "authentication_unavailable", "Authentication is temporarily unavailable")
 			return

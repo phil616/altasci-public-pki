@@ -93,3 +93,19 @@ test('authentication service failures have a distinct actionable message', async
   await page.getByRole('button', { name: '安全登录' }).click();
   await expect(page.getByText(/认证服务暂时不可用/)).toBeVisible();
 });
+
+for (const [code, status, message] of [
+  ['account_locked', 401, '密码正确，但账户仍在锁定期'],
+  ['totp_replayed', 401, '这个动态验证码已经使用过'],
+  ['totp_clock_behind', 503, '服务器保存的验证码时间步位于未来'],
+] as const) {
+  test(`identifies ${code} without calling it a wrong password`, async ({ page }) => {
+    await loginAPI(page);
+    await page.route('**/api/v1/auth/login', (route) => route.fulfill({ status, json: { code, status } }));
+    await fillCredentials(page);
+    await page.getByLabel('动态验证码（超级管理员必填）', { exact: true }).fill('123456');
+    await page.getByRole('button', { name: '安全登录' }).click();
+    await expect(page.getByText(message, { exact: false })).toBeVisible();
+    await expect(page).toHaveURL(/\/login$/);
+  });
+}

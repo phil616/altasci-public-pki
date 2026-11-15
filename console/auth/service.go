@@ -23,6 +23,11 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrSecondFactorRequired = errors.New("second factor required")
 var ErrInvalidCSRF = errors.New("invalid CSRF token")
 
+type AccountLockedError struct{ Until time.Time }
+
+func (e *AccountLockedError) Error() string { return "account is temporarily locked" }
+func (e *AccountLockedError) Unwrap() error { return ErrInvalidCredentials }
+
 type Service struct {
 	store  *store.Store
 	config consoleconfig.Config
@@ -104,12 +109,21 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		_, _ = security.VerifyPassword(input.Password, s.dummy)
 		return LoginResult{}, invalidCredentials("user_lookup", err)
 	}
-	if user.Status == "disabled" || (user.LockedUntil != nil && user.LockedUntil.After(now)) {
+	if user.Status == "disabled" {
 		return LoginResult{}, invalidCredentials("account_state", nil)
 	}
+	locked := user.LockedUntil != nil && user.LockedUntil.After(now)
 	passwordOK, verifyErr := security.VerifyPassword(input.Password, user.PasswordHash)
 	if verifyErr != nil || !passwordOK {
+		if locked {
+			return LoginResult{}, invalidCredentials("account_state", nil)
+		}
 		return LoginResult{}, s.loginFailure(ctx, user.ID, now, "password", verifyErr)
+	}
+	// Reveal lock information only after verifying the password. Do not consume
+	// a TOTP or extend the lock because a client retries during the lock period.
+	if locked {
+		return LoginResult{}, &AccountLockedError{Until: *user.LockedUntil}
 	}
 
 	var totpStep int64
@@ -123,6 +137,9 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		}
 		totpStep, err = security.VerifyTOTP(s.config.RootUserTOTPSecret, input.TOTP, now, user.TOTPLastStep)
 		if err != nil {
+			if errors.Is(err, security.ErrTOTPClockBehind) {
+				return LoginResult{}, err
+			}
 			return LoginResult{}, s.loginFailure(ctx, user.ID, now, "totp", err)
 		}
 	}
@@ -156,11 +173,45 @@ func (s *Service) loginFailure(ctx context.Context, userID string, now time.Time
 	return invalidCredentials(stage, cause)
 }
 
-func invalidCredentials(stage string, cause error) error {
-	if cause != nil {
-		return fmt.Errorf("%w at %s: %v", ErrInvalidCredentials, stage, cause)
+type credentialError struct {
+	stage string
+	cause error
+}
+
+func (e *credentialError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("%v at %s: %v", ErrInvalidCredentials, e.stage, e.cause)
 	}
-	return fmt.Errorf("%w at %s", ErrInvalidCredentials, stage)
+	return fmt.Sprintf("%v at %s", ErrInvalidCredentials, e.stage)
+}
+
+func (e *credentialError) Unwrap() []error {
+	if e.cause != nil {
+		return []error{ErrInvalidCredentials, e.cause}
+	}
+	return []error{ErrInvalidCredentials}
+}
+
+func invalidCredentials(stage string, cause error) error {
+	return &credentialError{stage: stage, cause: cause}
+}
+
+// FailureStage is safe for logs: it contains no submitted credentials or keys.
+func FailureStage(err error) string {
+	var credential *credentialError
+	var locked *AccountLockedError
+	switch {
+	case errors.As(err, &credential):
+		return credential.stage
+	case errors.As(err, &locked):
+		return "account_locked"
+	case errors.Is(err, security.ErrTOTPClockBehind):
+		return "totp_clock_behind"
+	case errors.Is(err, ErrSecondFactorRequired):
+		return "second_factor_required"
+	default:
+		return "internal"
+	}
 }
 
 func (s *Service) Authenticate(ctx context.Context, token, csrfToken, method string) (Principal, error) {

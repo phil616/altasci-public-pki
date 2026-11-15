@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -89,14 +90,25 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 	}
 	publicURL, _ := url.Parse("http://pki.example.test")
 	consoleURL, _ := url.Parse("http://console.example.test")
-	cfg := consoleconfig.Config{DatabaseURL: databaseURL, PublicBaseURL: publicURL, ConsoleBaseURL: consoleURL,
-		PublicHostname: publicURL.Hostname(), ConsoleHostname: consoleURL.Hostname(),
-		RootUserEmail: "root@example.test", RootUserPassword: "0123456789abcdefghijklmnopqrstuvwxyz",
-		RootUserTOTPSecret: bytes.Repeat([]byte{1}, 20),
-		MasterKeyActiveID:  "v1", MasterKeys: map[string][]byte{"v1": bytes.Repeat([]byte{2}, 32)},
-		SessionIdle: time.Hour, SessionMax: 8 * time.Hour, RootSessionIdle: 15 * time.Minute,
-		RootSessionMax: time.Hour, TSAMaxClockUncertainty: 5 * time.Second, DevelopmentInsecure: true}
+	for name, value := range map[string]string{
+		"DATABASE_URL": databaseURL, "PUBLIC_BASE_URL": publicURL.String(), "CONSOLE_BASE_URL": consoleURL.String(),
+		"ROOT_USER_EMAIL": "root@example.test", "ROOT_USER_PASSWORD": "0123456789abcdefghijklmnopqrstuvwxyz",
+		"ROOT_USER_TOTP_SECRET":    base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes.Repeat([]byte{1}, 20)),
+		"PKI_MASTER_KEY_ACTIVE_ID": "v1", "PKI_MASTER_KEYS": `{"v1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)) + `"}`,
+		"PKI_DEVELOPMENT_INSECURE": "true", "PKI_LISTEN_ADDRESS": "127.0.0.1:8080",
+		"TRUSTED_PROXY_CIDRS": "127.0.0.1/32", "TSA_MAX_CLOCK_UNCERTAINTY": "5s",
+	} {
+		t.Setenv(name, value)
+	}
+	cfg, err := consoleconfig.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	authService, err := auth.NewService(data, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err = authService.BootstrapRoot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +135,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("standalone root authentication", func(t *testing.T) {
-		testStandaloneRootAuth(t, productionAPI.Handler(), cfg)
+		testStandaloneRootAuth(t, productionAPI.Handler(), cfg, data)
 	})
 	rootCA, err := pkiService.CreateRoot(ctx, root, pki.CreateCAInput{Name: "Test Root", Slug: "test-root",
 		Subject: pki.Subject{CommonName: "Test Root CA", Organization: "Example"}, PathLength: 1})
@@ -402,7 +414,7 @@ func TestHTTPHostsLoginSessionAndCSRF(t *testing.T) {
 
 // testStandaloneRootAuth checks password/TOTP, replay rejection, secure cookies,
 // session authentication, CSRF and credential step-up through the real API.
-func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfig.Config) {
+func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfig.Config, data *store.Store) {
 	t.Helper()
 	forged := httptest.NewRequest("GET", "https://"+cfg.ConsoleHostname+"/api/v1/auth/session", nil)
 	forged.Header.Set("Cf-Access-Jwt-Assertion", "forged-gateway-identity")
@@ -426,9 +438,15 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 	}
 	var counter [8]byte
 	binary.BigEndian.PutUint64(counter[:], uint64(time.Now().Unix()/30))
-	mac := hmac.New(sha256.New, cfg.RootUserTOTPSecret)
-	_, _ = mac.Write(counter[:])
-	digest := mac.Sum(nil)
+	// Generate the submitted code with OpenSSL rather than another copy of the
+	// application's HMAC implementation. The fixture uses a public test secret.
+	command := exec.Command("openssl", "dgst", "-sha256", "-mac", "HMAC",
+		"-macopt", "hexkey:"+hex.EncodeToString(cfg.RootUserTOTPSecret), "-binary")
+	command.Stdin = bytes.NewReader(counter[:])
+	digest, err := command.Output()
+	if err != nil || len(digest) != 32 {
+		t.Fatalf("OpenSSL SHA-256 fixture failed: %v", err)
+	}
 	offset := digest[len(digest)-1] & 0x0f
 	code := fmt.Sprintf("%06d", (binary.BigEndian.Uint32(digest[offset:offset+4])&0x7fffffff)%1_000_000)
 	if w := login("wrong-password", code); w.Code != http.StatusUnauthorized {
@@ -448,7 +466,7 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.CSRFToken == "" {
 		t.Fatalf("invalid login response: %s", w.Body.String())
 	}
-	if replay := login(cfg.RootUserPassword, code); replay.Code != http.StatusUnauthorized {
+	if replay := login(cfg.RootUserPassword, code); replay.Code != http.StatusUnauthorized || !strings.Contains(replay.Body.String(), `"code":"totp_replayed"`) {
 		t.Fatalf("TOTP replay accepted: %d", replay.Code)
 	}
 	for _, tc := range []struct {
@@ -470,5 +488,32 @@ func testStandaloneRootAuth(t *testing.T, handler http.Handler, cfg consoleconfi
 		if recorder.Code != tc.status {
 			t.Fatalf("%s %s: %d %s", tc.method, tc.path, recorder.Code, recorder.Body.String())
 		}
+	}
+	ctx := context.Background()
+	user, err := data.RootUser(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='locked',failed_login_count=5,
+        locked_until=now()+interval '15 minutes' WHERE id=$1`, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	locked := login(cfg.RootUserPassword, code)
+	if locked.Code != http.StatusUnauthorized || !strings.Contains(locked.Body.String(), `"code":"account_locked"`) || locked.Header().Get("Retry-After") == "" {
+		t.Fatalf("valid password during lock was not diagnosed: %d %s", locked.Code, locked.Body.String())
+	}
+	if wrong := login("wrong-password", code); strings.Contains(wrong.Body.String(), `"code":"account_locked"`) {
+		t.Fatal("lock status was revealed without a valid password")
+	}
+	if _, err := data.Pool().Exec(ctx, `UPDATE users SET status='active',failed_login_count=0,
+        locked_until=NULL,root_totp_last_step=$2 WHERE id=$1`, user.ID, time.Now().Unix()/30+100); err != nil {
+		t.Fatal(err)
+	}
+	future := login(cfg.RootUserPassword, code)
+	if future.Code != http.StatusServiceUnavailable || !strings.Contains(future.Body.String(), `"code":"totp_clock_behind"`) {
+		t.Fatalf("valid code blocked by future counter reported a bad password: %d %s", future.Code, future.Body.String())
+	}
+	if _, err := data.Pool().Exec(ctx, `UPDATE users SET root_totp_last_step=$2 WHERE id=$1`, user.ID, user.TOTPLastStep); err != nil {
+		t.Fatal(err)
 	}
 }

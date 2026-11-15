@@ -28,6 +28,7 @@ curl --fail https://pki-console.example.com/api/v1/version
 - 普通会话空闲上限 8 小时、绝对上限 24 小时；超级管理员分别为 30 分钟、4 小时。
   目前是代码常量，不能通过自行添加环境变量调整。
 - 账户连续 5 次认证失败锁定 15 分钟；登录另限每客户端 IP 每分钟 10 次。
+  锁定期间重试不延长锁定；锁定到期后的首次失败从 1 重新计数。
   root 密码正确但未填写 TOTP 返回 `second_factor_required`，不增加账户失败次数；错误密码、
   错误或重放验证码继续计数。客户端角色选项不影响服务端的强制 TOTP 校验。
 - 超级管理员使用 SHA-256、6 位、30 秒 TOTP；接受当前时间步前后各一格，已成功接受
@@ -37,6 +38,8 @@ curl --fail https://pki-console.example.com/api/v1/version
 
 401 先核对具体错误码、账户、Cookie、锁定状态和 TOTP 算法/时间，避免反复快速重试。
 403 `csrf_failed` 单独检查 CSRF；503 `authentication_unavailable` 检查数据库和服务日志，不能当作密码错误。
+新版本在验证密码后用 401 `account_locked` 和 `totp_replayed` 区分锁定与重放；
+503 `totp_clock_behind` 表示当前验证码正确但已用时间步超前，应检查时钟/重放状态，不累计凭据失败。
 生产 Cookie 为 `__Host-pki_session`，仅 HTTPS、HttpOnly、SameSite=Strict。
 CA 私钥导出需要重新输入**当前密码**和未使用的 TOTP。
 
@@ -48,8 +51,10 @@ CA 私钥导出需要重新输入**当前密码**和未使用的 TOTP。
    修改 systemd 环境文件后重启才生效。密码按原文校验，不移除首尾空格，不附加环境文件的引用符。
 3. 使用匹配 `ROOT_USER_TOTP_SECRET` 的验证器，确认 **SHA-256、6 位、30 秒**，检查手机和服务器时间。
    常见默认 SHA-1 生成的验证码不匹配；已接受的验证码不能重复使用。
-4. 根据页面请求编号查看 `login denied` 日志：`password` 是密码/hash 问题，`totp` 是验证码、
-   时钟或重放问题，`account_state` 是禁用/锁定。存储错误返回 503 并在服务器记录具体原因。
+4. 根据页面请求编号查看 `login denied` 日志的 `stage`/`error`：`password` 是密码/hash 问题，
+   `totp` 表示密码已通过，`account_state` 是旧版本的禁用/锁定结果。
+   用 [认证诊断](authentication-diagnostics.md) 中的 `auth-check --pid PID` 检查实际进程环境，
+   并通过 `--totp-stdin` 只读核对当前代码；不要公开环境文件或原始登录请求。
 5. 若之前已累计锁定，停止重试并等待 15 分钟。需要凭据恢复时，更新环境中的 root 密码后重启
    新版本，密码同步会清除旧锁定。仅重启且不修改凭据会保留锁定和重放保护。
 
