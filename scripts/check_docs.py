@@ -230,7 +230,7 @@ def check_fields(document):
 
 
 def markdown_files():
-    return [ROOT / "README.md", ROOT / "target.md", ROOT / "web/README.md",
+    return [ROOT / "README.md", ROOT / "web/README.md",
             *sorted(DOCS.glob("*.md")), DOCS / "archive/cloudflare-2026/README.md"]
 
 

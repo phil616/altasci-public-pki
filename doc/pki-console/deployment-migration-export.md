@@ -1,6 +1,6 @@
 # 备份、迁移、恢复与导出
 
-状态：当前指南；核对日期：2026-11-16。适用于单体应用和外部 PostgreSQL 18+。
+状态：当前指南；核对日期：2026-11-17。适用于单体应用和外部 PostgreSQL 18+。
 首次空库安装见 [部署指南](production-deployment.md)。
 
 ## 备份范围
@@ -58,8 +58,7 @@ pg_restore --exit-on-error --no-owner --role=pki_console \
 5. 检查健康、登录、签发和公开发布后切流，观察日志和队列。
 6. 记录校验和、基线标记、切换时点和回滚条件。
 
-外部 PostgreSQL 可在独立主机、数据库服务或容器中运行；根目录 Dockerfile 和
-`.goreleaser.yml` 属于原 CFSSL，不是当前 Console 镜像或发布配置。见 [发布指南](release.md)。
+外部 PostgreSQL 可在独立主机、数据库服务或容器中运行；`.goreleaser.yml` 属于原 CFSSL，不是当前 Console 发布配置。见 [发布指南](release.md)。
 
 ## 回滚
 

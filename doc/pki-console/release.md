@@ -1,8 +1,8 @@
 # 单体应用构建、检查与发布
 
-状态：当前指南；核对日期：2026-11-16。[GitHub Actions 工作流](../../.github/workflows/pki-console.yml)
+状态：当前指南；核对日期：2026-11-17。[GitHub Actions 工作流](../../.github/workflows/pki-console.yml)
 支持 PR 精简测试和版本 tag 自动发布 PKI-Console 单体应用。
-根目录 Dockerfile、`.goreleaser.yml`、`make release` 和原 CFSSL 安装目标不构建或发布当前单体应用。
+`.goreleaser.yml`、`make release` 和原 CFSSL 安装目标不构建或发布当前单体应用。
 
 ## GitHub 自动测试与发布
 
@@ -119,6 +119,9 @@ bash .github/scripts/build-release.sh v1.0.0 /tmp/pki-console-v1.0.0
 首版只支持 [空库初始化](schema-initialization.md)。发布前分别验证内嵌 SQL 的
 `migrate` 和发行包 `schema.sql` 的手动初始化、重复应用命令不改变数据、未知非空库被拒绝，
 以及程序启动后的版本、健康、密码登录与公开接口。手动 SQL 方式必须使用单个事务。
+
+实际发布前按 [人工验收手册](manual-acceptance.md) 操作浏览器与 OpenSSL，
+记录真实证书、吊销和权限结果。它与代码测试是不同层次的检查，不能互相代替。
 
 ## 依赖维护
 

@@ -1,6 +1,6 @@
 # PKI-Console 单体应用
 
-状态：当前文档；核对日期：2026-11-16。行为以同一提交的代码、配置和初始化 SQL 为准，
+状态：当前文档；核对日期：2026-11-17。行为以同一提交的代码、配置和初始化 SQL 为准，
 示例不代表线上资源状态。维护约定见 [文档维护规范](documentation-maintenance.md)。
 
 PKI-Console 基于 CFSSL Go 库实现证书管理。一个 `pki-console` 二进制内置 React
@@ -27,6 +27,7 @@ Nginx 示例见 [nginx.conf.example](nginx.conf.example)，systemd 单元见
 
 | 任务 | 当前指南 |
 | --- | --- |
+| 按步骤人工操作并用命令核验全部功能 | [人工验收手册](manual-acceptance.md) |
 | 业务配置、授权与签发 | [业务指南](enterprise-pki-web-setup.md) |
 | 日常运维与故障排查 | [运维指南](operations-runbook.md) |
 | 用户名密码登录、配置与故障处理 | [密码认证](password-authentication.md) |

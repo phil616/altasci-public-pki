@@ -24,6 +24,8 @@ The [OpenAPI contract](doc/pki-console/openapi.yaml) and
 [desktop client guide](doc/pki-console/desktop-client-integration.md) describe
 local session authentication. Earlier Cloudflare deployment and incident
 records are retained in [the historical archive](doc/pki-console/archive/cloudflare-2026/README.md).
+Use the [manual acceptance plan](doc/pki-console/manual-acceptance.md) for guided
+CA creation/import, issuance, revocation and OpenSSL verification.
 See [build and release](doc/pki-console/release.md) and
 [documentation maintenance](doc/pki-console/documentation-maintenance.md) for current checks.
 
